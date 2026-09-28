@@ -2,7 +2,7 @@
 Vectorisers are fitted on train + test text together (label-free), so French words (test only) get real IDF weights;
 a train-only fit would treat every French word as unknown. Same settings as experiments/tfidf_ab.py (A/B: +0.0012).
 
-python experiments/tfw_cols.py --work work --tag k30_p1500_ap_ak_use20
+python pipeline/tfw_cols.py --work work --tag k30_p1500_ap_ak_use20
 """
 import argparse
 from pathlib import Path

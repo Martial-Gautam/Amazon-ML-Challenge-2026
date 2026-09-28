@@ -3,7 +3,7 @@
 LB 27 Sep: v11+L1 (v10 base) 0.98533 -> with A's (v9 base) French rows 0.985926: v9 is better on France (+0.004),
 v10 on US/India.
 
-python experiments/country_merge.py --base output_final_v11L1 --take output_final_v9_control --countries France \
+python pipeline/country_merge.py --base output_final_v11L1 --take output_final_v9_control --countries France \
     --out output_probe_hyb_A_fr
 """
 import argparse

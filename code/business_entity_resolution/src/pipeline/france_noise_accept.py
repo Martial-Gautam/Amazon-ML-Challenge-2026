@@ -6,7 +6,7 @@ P1's cut and P1 removed ~3,000 true copies the models scored >= 0.91. Also "asso
 Accepts (record not owned by any S1, one owner per record), on the same house number:
   associes (any score), services (prob >= 0.5), and optional --words W1,W2 (prob >= 0.91 and in the P1 list).
 
-python experiments/france_noise_accept.py --base output_probe_hyb2_p5b_frt0.19 --out output_final
+python pipeline/france_noise_accept.py --base output_probe_hyb2_p5b_frt0.19 --out output_final
 """
 import argparse
 import subprocess
@@ -17,6 +17,7 @@ import polars as pl
 from rapidfuzz import fuzz, process
 
 W = Path("work9")
+HERE = Path(__file__).resolve().parent
 
 
 def swaps(prob):
@@ -65,7 +66,7 @@ def main():
     g.write_parquet(gp)
     print(f"noise-copy candidates: {g.height} ({sel.group_by('add').len().sort('len', descending=True).rows()})", flush=True)
     first = Path(f"{a.out}_noise") if a.reverse_rules else a.out
-    subprocess.run([sys.executable, "experiments/france_probe.py", "--base", str(a.base), "--groups", str(gp), "--mode", "accept",
+    subprocess.run([sys.executable, str(HERE / "france_probe.py"), "--base", str(a.base), "--groups", str(gp), "--mode", "accept",
                     "--out", str(first)], check=True)
     if a.reverse_rules:
         s1 = pl.scan_parquet(str(W / "test_s1" / "*.parquet")).select(i="idx", source1_entity_id="entity_id").collect()
@@ -79,7 +80,7 @@ def main():
         rp = Path(f"{a.out}_reverse.parquet")
         rev.write_parquet(rp)
         print(f"rule reversal candidates (winners, prob >= 0.91): {rev.height}", flush=True)
-        subprocess.run([sys.executable, "experiments/france_probe.py", "--base", str(first), "--groups", str(rp), "--mode", "accept",
+        subprocess.run([sys.executable, str(HERE / "france_probe.py"), "--base", str(first), "--groups", str(rp), "--mode", "accept",
                         "--out", str(a.out)], check=True)
     subprocess.run([sys.executable, "utils/validate_submission.py", "-m", str(a.out / "matching_results.tsv"),
                     "-c", str(a.out / "candidate_pairs.tsv"), "-t", "dataset/test", "--check-ids"], check=True)

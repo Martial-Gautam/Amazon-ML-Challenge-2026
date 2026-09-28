@@ -4,13 +4,13 @@ Band = the pairs that have a ce2 score (v8's band, prob in [0.02, 0.98]; exporte
 model h0 scored train half 1, h1 half 0; test = mean of h0 and h1). Run A: LightGBM on [logit(oof_v81), ce2];
 control run B: [logit(oof_v81)] (removes the gain of merely re-calibrating the band). 5-fold GroupKFold by S1.
 Both scored on the FULL decision (p2 on band pairs, v8.1's oof elsewhere; threshold grid x one-owner on/off) over ALL
-sampled S1 (tune_meta.parquet), the definition of experiments/cv_all.py. Only if A > B: fit A on all train band
+sampled S1 (tune_meta.parquet), the definition of cv_all.py. Only if A > B: fit A on all train band
 pairs, write <out>/ (candidate_pairs.tsv copied from <src>/). Stops if a train score comes from its own half's model.
 Any base version (defaults = v8.1 in work/), e.g. v9:
-  python experiments/ce2_band.py --work work9 --band work9/ce2band --oof work9/oof_v9.parquet \
+  python pipeline/ce2_band.py --work work9 --band work9/ce2band --oof work9/oof_v9.parquet \
       --test-prob work9/test_prob_v9.parquet --meta work9/tune_meta.parquet --src output_v9 --out output_v9ce2
 
-nice -n 19 python experiments/ce2_band.py --work work --band work/ce2band
+nice -n 19 python pipeline/ce2_band.py --work work --band work/ce2band
 """
 import argparse
 import json
@@ -23,7 +23,7 @@ import numpy as np
 import polars as pl
 from sklearn.model_selection import GroupKFold
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # in the submission zip: src/experiments/ -> src/
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # src/
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "code/business_entity_resolution/src"))  # git repo
 from run import decide, write  # noqa: E402
 
@@ -73,6 +73,8 @@ def main():
     ap.add_argument("--frce-min-cov", type=float, default=0.98, help="min share of French pairs (p >= 0.02) with a P5 score")
     ap.add_argument("--write-arm", choices=("new", "control"), default="new",
                     help="which arm to fit and write (control = e.g. A2 in --ce3 mode, for an LB A/B of ce3)")
+    ap.add_argument("--half", type=int, choices=(0, 1), help="fit and score the stage on the S1 records of this half only "
+                    "(the final's French rows: half 1, as leaderboard upload A)")
     ap.add_argument("--threads", type=int, default=8)
     a = ap.parse_args()
     a.oof, a.test_prob = a.oof or a.work / "oof_v81.parquet", a.test_prob or a.work / "test_prob_v81.parquet"
@@ -100,6 +102,8 @@ def main():
         tr_ce = tr_ce.join(c3, on=["i", "j"], how="inner")
         te_ce = te_ce.join(ce(a.ce3 / "test_ce.parquet", "ce3"), on=["i", "j"], how="inner")
         arms = [("A2 [logit(oof), ce2]", ["lo", "ce2"]), ("A3 [logit(oof), ce2, ce3]", ["lo", "ce2", "ce3"])]
+    if a.half is not None:  # same rows as the uploaded build, whose e5-large helper scores covered exactly half 1
+        o, meta = o.filter(half == a.half), meta.filter(half == a.half)
     o = o.with_row_index("r")
     band = o.join(tr_ce, on=["i", "j"], how="inner").sort("r")
     band = band.with_columns(lo=pl.Series(logit(band["oof"].to_numpy())))

@@ -3,7 +3,7 @@ Band = pairs with probability in [0.02, 0.98]: train from the OOF predictions, t
 Model h0 (trained on half-0 S1) scores train rows of half 1, h1 scores half 0; both score the whole test band.
 -> <out>/h0/{train,test}_pairs.parquet, <out>/h1/{train,test}_pairs.parquet (i, j), one Kaggle dataset per half.
 
-python experiments/band_export.py --oof work9/oof_v9.parquet --test-prob work9/test_prob_v9.parquet --out work9/band
+python pipeline/band_export.py --oof work9/oof_v9.parquet --test-prob work9/test_prob_v9.parquet --out work9/band
 """
 import argparse
 import sys
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import polars as pl
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # in the submission zip: src/experiments/ -> src/
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # src/
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "code/business_entity_resolution/src"))  # git repo
 from ce_data import ce_half  # noqa: E402
 

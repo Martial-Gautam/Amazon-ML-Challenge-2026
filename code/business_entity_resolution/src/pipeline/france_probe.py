@@ -9,7 +9,7 @@ unknown -> probe.
 --mode reject : drop G pairs from the base's French matches
 --mode accept : add G pairs (not already matched to another S1) to the base's French matches (and candidates if needed)
 
-python experiments/france_probe.py --base output_v81ce2 --groups work9/g_test.parquet --mode reject --out output_probe_g_rej
+python pipeline/france_probe.py --base output_v81ce2 --groups work9/g_test.parquet --mode reject --out output_probe_g_rej
 """
 import argparse
 import shutil

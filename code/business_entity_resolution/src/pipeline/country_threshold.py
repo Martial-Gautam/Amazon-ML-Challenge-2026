@@ -1,7 +1,7 @@
 """Write a submission from saved test probabilities with a separate threshold for one country (label-free choice, e.g.
 France stricter per the v8 LB threshold probes: 0.68 0.973633 < 0.72 0.973867 < 0.76 0.973972). One-owner rule as run.py.
 
-python experiments/country_threshold.py --work work9 --prob work9/test_prob_v9ce2.parquet --json output_v9ce2/ce2_band.json \
+python pipeline/country_threshold.py --work work9 --prob work9/test_prob_v9ce2.parquet --json output_v9ce2/ce2_band.json \
     --country France --offset 0.04 --out output_v9ce2_fr
 Threshold and one-owner rule come from the stage's json (CV choice); the country gets threshold + offset (v8 LB probes:
 +0.04 above the CV optimum was better, +0.000105). candidate_pairs.tsv = exactly the pairs in --prob (the scored set).

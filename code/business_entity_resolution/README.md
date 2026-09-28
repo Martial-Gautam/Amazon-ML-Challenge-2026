@@ -31,173 +31,54 @@ across 1.7 M test records in three countries, one of them never seen in training
 
 ## 1. Reproduce the output, step by step
 
-> Run every command from the **package root**: the folder that holds `code/` and `Documentation_template.md`.
-> Steps marked **GPU** need CUDA; we ran them as Kaggle notebooks (wrappers in `src/experiments/kaggle/`).
-> Intermediate files are cached in `work/`, `work9/`, `work10/`. Delete a file to force its rebuild.
+The whole pipeline runs from **one script**. Run everything from the **package root**, the folder that holds `code/`
+and `Documentation_template.md`.
 
-### Step 0 · Environment
-
+**Step 1 · Put the data and the validator next to `code/`**
 ```bash
-# 0.1 link the competition data and the organisers' validator into the package root
 ln -s /path/to/student_resource/dataset dataset
 ln -s /path/to/student_resource/utils   utils
-# 0.2 the helper scripts are called as experiments/… (in the package they live under src/experiments)
-ln -s code/business_entity_resolution/src/experiments experiments
-# 0.3 Python environment
-python3 -m venv .venv
-.venv/bin/pip install -r code/business_entity_resolution/requirements.txt
-.venv/bin/pip install -r code/business_entity_resolution/requirements-gpu.txt   # GPU steps only (+ a CUDA build of torch)
-# 0.4 shortcuts used below
-S=code/business_entity_resolution/src
-X=experiments
-P=code/business_entity_resolution/best_params.json
-# 0.5 self-test of the normaliser (prints "ok")
-.venv/bin/python $S/prep.py
 ```
 
-### Step 1 · Shared inputs: raw text, neighbours, small cross-encoder
-
+**Step 2 · Install**
 ```bash
-# 1.1 normalised records (base blocking) and raw text per record for the GPU scripts
-.venv/bin/python $S/run.py pairs --work work --n-train 2206821 --k-use 20 --pool 1500 --addr-partial --addr-keys
-mkdir -p work/text && .venv/bin/python -c "import polars as pl
-for s in ('train','test'):
-    for w in ('s1','cand'):
-        pl.scan_parquet(f'work/{s}_{w}/*.parquet').select('idx','business_name','business_address').sink_parquet(f'work/text/{s}_{w}.parquet')"
-# 1.2 small cross-encoder: training set of S1 kept out of the classifier, then GPU fine-tune
-.venv/bin/python $S/ce_data.py --n-train 600000 --out work/ce
-.venv/bin/python $S/ce.py --text work/text --pairs work/ce --out work/gpu                        # GPU
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r code/business_entity_resolution/requirements.txt
+pip install -r code/business_entity_resolution/requirements-gpu.txt   # torch + transformers==4.57.6 (CUDA build)
 ```
 
-GPU · Kaggle notebooks for the two neighbour sources (attach `work/text` and the `work/*_pairs` files as a dataset):
-
-| Notebook | Produces | Notes |
-|---|---|---|
-| `experiments/n4_search.py` | `work/n4/{train,test}_knn.parquet` | set `SPLIT` to `train`, then `test` |
-| `experiments/ret_train.py` | fine-tuned retriever model | trains on the 99,948 held-out S1 only |
-| `experiments/ret_search.py` | `work/ret/{train,test}_knn.parquet` | uses the retriever model; set `SPLIT` |
-
-### Step 2 · Build v9 (source of the French rows)
-
+**Step 3 · Run**
 ```bash
-FLAGS9="--work work9 --n-train 2206821 --k-use 20 --pool 1500 --addr-partial --addr-keys --rescue \
-        --knn work/n4 --knn-top 5 --rare-empty --exclude-s1 work/ce/ce_train.parquet"
-.venv/bin/python $S/run.py pairs $FLAGS9                                  # candidates + work9/emb_in for the GPU
-.venv/bin/python $X/tfw_cols.py    --work work9 --tag k30_p1500_ap_ak_use20_rs_knn5_re
-.venv/bin/python $X/rarity_cols.py --work work9 --tag k30_p1500_ap_ak_use20_rs_knn5_re
-.venv/bin/python $S/run.py train   $FLAGS9 --features-only
-.venv/bin/python $S/run.py predict $FLAGS9 --features-only
-# GPU · neural pair features for every candidate pair
-mkdir -p work9/text work9/gpu && .venv/bin/python -c "import polars as pl
-for s in ('train','test'):
-    for w in ('s1','cand'):
-        pl.scan_parquet(f'work9/{s}_{w}/*.parquet').select('idx','business_name','business_address').sink_parquet(f'work9/text/{s}_{w}.parquet')"
-.venv/bin/python $S/embed.py --text work9/text --pairs work9/emb_in --out work9/gpu
-.venv/bin/python $S/ce.py    --text work9/text --pairs work9/emb_in --out work9/gpu --model-dir work/gpu/ce_model
-# classifier: 5-fold OOF + threshold + final fit
-.venv/bin/python $X/retrain_extra.py --work work9 --params $P \
-    --extra 'work9/gpu/{split}_emb.parquet' --extra 'work9/gpu/{split}_ce.parquet' \
-    --extra 'work9/tfw_{split}.parquet' --extra 'work9/rarity_{split}.parquet' --out output_v9 --tag v9
+bash code/business_entity_resolution/reproduce.sh
 ```
 
-### Step 3 · Cross-encoder re-ranker on v9's uncertain band
-
-```bash
-# GPU · e5-base re-ranker, one model per S1 half (Kaggle wrapper: $X/kaggle/ce2_train_h0.py, h1 alike)
-for h in 0 1; do
-  .venv/bin/python $S/ce_data.py --half $h --n-ce 200000 --k-use 20 --out work/ce2
-  .venv/bin/python $S/ce.py --text work/text --pairs work/ce2 --train-file ce_train_h$h.parquet --out work/ce2_h$h \
-      --model intfloat/multilingual-e5-base --lr 3e-5 --epochs 1 --batch 64
-done
-# export the band (0.02 <= p <= 0.98) and score it with both models (GPU)
-.venv/bin/python $X/band_export.py --oof work9/oof_v9.parquet --test-prob work9/test_prob_v9.parquet --out work9/band
-for h in 0 1; do
-  .venv/bin/python $S/ce.py --text work9/text --pairs work9/band/h$h --out work9/ce2band/h$h --model-dir work/ce2_h$h/ce_model
-done
-# stacked meta-classifier -> work9/test_prob_v9ce2.parquet
-.venv/bin/python $X/ce2_band.py --work work9 --band work9/ce2band --oof work9/oof_v9.parquet \
-    --test-prob work9/test_prob_v9.parquet --meta work9/tune_meta.parquet --report work9/report_v9.json \
-    --src output_v9 --out output_v9ce2
-# French look-alike rule lists: P1 (same address), P2' (different address)
-.venv/bin/python $X/france_rule.py --work work9 --pairs work9/test_prob_v9ce2.parquet --out work9/g_test_common.parquet
-.venv/bin/python $X/france_rule.py --work work9 --pairs work9/test_prob_v9ce2.parquet --address different \
-    --out work9/g2_test_diffaddr_sym.parquet
-```
-
-### Step 4 · Domain-adapted French cross-encoders
-
-```bash
-# 4.1 French self-training set from the TEST records (no labels): confident positives + synthetic negatives
-.venv/bin/python $X/fr_synth.py --out work9/frce --score work9/test_prob_v9ce2.parquet
-# 4.2 GPU · model A = re-ranker half 0, fine-tuned on it; scores the French pairs -> work9/frce_out/test_ce.parquet
-.venv/bin/python $S/ce.py --text work9/frce/text --pairs work9/frce/pairs --out work9/frce_out \
-    --model work/ce2_h0/ce_model --lr 2e-5 --epochs 1 --batch 64
-# 4.3 GPU · model B = the same recipe from half 1                                 -> work10/frce_b/test_ce.parquet
-.venv/bin/python $S/ce.py --text work9/frce/text --pairs work9/frce/pairs --out work10/frce_b \
-    --model work/ce2_h1/ce_model --lr 2e-5 --epochs 1 --batch 64
-# 4.4 GPU · e5-large helper ensemble: 4 shards ($X/kaggle/ce3_shard.py), mean of the shard logits
-#     -> work9/ce3ens/{train,test}_ce.parquet. Step 6.2 uses it only to fit the stacking model on S1 half 1,
-#     exactly as the uploaded file was built; its scores are not a model input there.
-```
-
-### Step 5 · Build v10 (source of the US/India rows)
-
-```bash
-FLAGS10="--work work10 --n-train 2206821 --k-use 20 --pool 1500 --addr-partial --addr-keys --rescue --knn work/n4 \
-         --knn-top 5 --knn2 work/ret --knn2-top 10 --rare-empty --exclude-s1 work/ce/ce_train.parquet --tfidf-all"
-.venv/bin/python $S/run.py pairs $FLAGS10
-.venv/bin/python $X/rarity_cols.py --work work10 --tag k30_p1500_ap_ak_use20_rs_knn5_rk10_re
-.venv/bin/python $S/run.py train   $FLAGS10 --features-only
-.venv/bin/python $S/run.py predict $FLAGS10 --features-only
-# GPU · neural pair features: the step-2 text export, embed.py and ce.py commands with work9 replaced by work10
-.venv/bin/python $X/retrain_extra.py --work work10 --params $P \
-    --extra 'work10/gpu/{split}_emb.parquet' --extra 'work10/gpu/{split}_ce.parquet' --extra 'work10/rarity_{split}.parquet' \
-    --seeds 3 --out output_v10 --tag v10                                   # CV 0.98802
-# re-ranker band for v10: band_export + GPU scoring as in step 3, into work10/band/h0 and h1, then stacking
-.venv/bin/python $X/band_export.py --oof work10/oof_v10.parquet --test-prob work10/test_prob_v10.parquet --out work10/band
-.venv/bin/python $X/ce2_band.py --work work10 --band work10/band --oof work10/oof_v10.parquet \
-    --test-prob work10/test_prob_v10.parquet --meta work10/tune_meta.parquet --src output_v10 --out output_v10ce2
-# rule lists with v9's normalisation over v10's pairs (the lists the leaderboard probes validated)
-.venv/bin/python $X/france_rule.py --work work9 --pairs work10/test_prob_v10.parquet --out work10/g_test_common_w9prep.parquet
-.venv/bin/python $X/france_rule.py --work work9 --pairs work10/test_prob_v10.parquet --address different \
-    --out work10/g2_test_diffaddr_sym_w9prep.parquet
-```
-
-### Step 6 · Decisions, merge, final file
-
-```bash
-# 6.1 US/India rows: threshold 0.58 + ambiguity rejection (this file's French rows are replaced in 6.3)
-T=0.58 G1=work10/g_test_common_w9prep.parquet G2=work10/g2_test_diffaddr_sym_w9prep.parquet \
-  bash $X/final_assemble.sh work10 work10/test_prob_v10ce2.parquet output_v10ce2/ce2_band.json output_final_v11L1 0.10
-# 6.2 French rows: v9 stacking with French models A + B averaged; France threshold 0.72 + 0.19 = 0.91
-.venv/bin/python $X/ce2_band.py --work work9 --band work9/ce2band --oof work9/oof_v9.parquet \
-    --test-prob work9/test_prob_v9.parquet --meta work9/tune_meta.parquet --report work9/report_v9.json \
-    --src output_v9 --out output_v9ce3ab_control_p5b --save-test-prob work9/test_prob_v9_p5b.parquet \
-    --ce3 work9/ce3ens --frce work9/frce_out work10/frce_b --frce-min-cov 0.95 --write-arm control --margin -1
-bash $X/final_assemble.sh work9 work9/test_prob_v9_p5b.parquet output_v9ce3ab_control_p5b/ce2_band.json \
-  output_final_v9_p5b_fr0.19 0.19
-# 6.3 merge by country: US/India rows from 6.1, French rows from 6.2                    (LB 0.986371)
-.venv/bin/python $X/country_merge.py --base output_final_v11L1 --take output_final_v9_p5b_fr0.19 \
-    --countries France --out output_probe_hyb2_p5b_frt0.19
-# 6.4 French noise-variant recovery + high-confidence rule reversal -> output/          (LB 0.986691)
-.venv/bin/python $X/france_noise_accept.py --base output_probe_hyb2_p5b_frt0.19 --reverse-rules --out output
-```
-
-### Step 7 · Validate
-
+**Step 4 · Validate**
 ```bash
 python3 utils/validate_submission.py --matching output/matching_results.tsv \
     --candidate output/candidate_pairs.tsv --test-dir dataset/test --check-ids
 # expected: 1,732,544 rows in each file, 5,817,951 matches, "PASS — no blocking issues found"
 ```
 
-> **Exactness.** Steps 6.3–6.4 rebuild the uploaded file with identical match and candidate sets on every row from the
-> step-6.1 and 6.2 files. The uploaded run scored French pairs selected from both an earlier v8.1 build and v9
-> (`fr_synth.py --score …v81ce2 --score …v9ce2`), plus 210,562 extra French pairs scored on CPU with `cpu_score.py`;
-> Step 4.1 selects from v9 only: it covers 95.2 % of the French pairs step 6.2 re-scores (the uploaded run: 95.7 %;
-> the check needs 95 %). The ~5,800 pairs in between keep their stage-2 probability, so a handful of French rows can
-> differ from the upload. Cross-encoder scores can also differ in the last decimals across GPU types; keep
-> `transformers==4.57.6`.
+`reproduce.sh` runs seven stages in order. A step whose output already exists is skipped, so an interrupted run
+resumes where it stopped, and `bash code/business_entity_resolution/reproduce.sh v10 final` runs only the named stages.
+
+| Stage | What it builds | Hardware |
+|---|---|---|
+| `base` | normalised records, raw text, small cross-encoder | CPU + GPU |
+| `neighbours` | dense retriever, then e5 and retriever nearest neighbours (candidate sources) | GPU |
+| `v9` | v9 build: candidates, features, LightGBM classifier (source of the French rows) | CPU + GPU |
+| `rerank` | e5-base re-ranker (one model per S1 half), stacking on v9, French look-alike lists | GPU + CPU |
+| `france` | two domain-adapted French cross-encoders | GPU |
+| `v10` | v10 build: retriever candidates, 3-seed classifier, re-ranker stacking (source of the US/India rows) | CPU + GPU |
+| `final` | per-country decisions, merge, French noise-variant recovery, validation → `output/` | CPU |
+
+Compute used: a 32-core, 54 GB Linux machine (blocking peaks at ~36 GB) and one 16 GB GPU at a time (Kaggle T4/P100).
+Use `PY=/path/to/python` to choose the interpreter.
+
+> **Exactness.** Given the intermediate files of our run, the `final` stage rebuilds the uploaded file exactly
+> (identical match and candidate sets on every row; checked). A full rebuild from scratch can differ on a few French
+> rows: our run also used French pairs from an earlier v8.1 build to select what the French models score (95.7 % vs
+> 95.2 % coverage), and GPU scores can differ in the last decimals across GPU types. Keep `transformers==4.57.6`.
 
 ## 2. The problem
 
@@ -244,6 +125,7 @@ A **two-stage matcher** on a **high-recall candidate set**, followed by a **per-
 │   └── candidate_pairs.tsv            ← the pairs the model scored (~25 per S1)
 └── code/business_entity_resolution/
     ├── README.md                      ← same file as this one
+    ├── reproduce.sh                   ← runs the whole pipeline, stage by stage
     ├── requirements.txt               ← pinned CPU stack (polars, lightgbm, rapidfuzz, scikit-learn, scipy …)
     ├── requirements-gpu.txt           ← torch + transformers==4.57.6 for the GPU steps
     ├── best_params.json               ← Optuna-tuned LightGBM parameters
@@ -257,40 +139,30 @@ A **two-stage matcher** on a **high-recall candidate set**, followed by a **per-
         ├── ce_data.py                 ← builds cross-encoder training pairs (S1 kept out of the classifier's CV)
         ├── ce.py                      ← GPU: fine-tunes or applies a cross-encoder (e5-small or e5-base)
         ├── tune.py                    ← Optuna search for LightGBM → best_params.json
-        ├── run.py                     ← pipeline driver: stages pairs, train, predict, all
-        └── experiments/               ← pipeline stages added after v8: required to rebuild the final (see note below)
+        ├── run.py                     ← core driver: stages pairs, train, predict
+        └── pipeline/                  ← later stages, called by reproduce.sh
             │   ── candidates ──
-            ├── n4_search.py           ← GPU (Kaggle): e5 nearest neighbours per S1, a candidate source
-            ├── ret_train.py           ← GPU (Kaggle): contrastive fine-tune of the dense retriever
-            ├── ret_search.py          ← GPU (Kaggle): retriever top-k neighbours, a candidate source
+            ├── ret_train.py           ← GPU: contrastive fine-tune of the dense retriever
+            ├── knn_search.py          ← GPU: nearest-neighbour candidates (plain e5 or the retriever)
             │   ── features and classifier ──
             ├── rarity_cols.py         ← name-rarity counts per pair
-            ├── tfw_cols.py            ← word TF-IDF cosines (v9 only; dropped in v10)
+            ├── tfw_cols.py            ← word TF-IDF cosines (v9 only)
             ├── retrain_extra.py       ← LightGBM: 5-fold GroupKFold OOF, threshold search, multi-seed final fit
             │   ── re-ranking and French adaptation ──
-            ├── band_export.py         ← exports the uncertainty-band pairs for the cross-encoder
-            ├── ce2_band.py            ← stacked meta-classifier on [classifier logit, cross-encoder logit]
+            ├── band_export.py         ← exports the uncertainty-band pairs for the re-ranker
+            ├── ce2_band.py            ← stacked meta-classifier on [classifier logit, re-ranker logit]
             ├── fr_synth.py            ← builds the French self-training set (pseudo-labels + synthetic negatives)
-            ├── cpu_score.py           ← scores pairs with a trained cross-encoder on CPU
-            ├── kaggle/                ← GPU job wrappers (frce_train.py, ce2_train_h0.py, band_score_h0.py, ce3_*.py)
             │   ── decision layer ──
+            ├── final_assemble.sh      ← thresholds + French rules + validator for one build
             ├── country_threshold.py   ← one-to-one assignment, per-country thresholds, ambiguity rejection
-            ├── country_thr_cv.py      ← picks the US/India threshold and ambiguity δ on the stage-2 OOF
             ├── france_rule.py         ← lists French look-alike pairs (rules P1 / P2′)
             ├── france_probe.py        ← applies a pair list to a submission (reject or accept), French rows only
-            ├── france_noise_accept.py ← noise-variant recovery + high-confidence rule reversal (final step)
-            ├── france_thr_model.py    ← fits the France calibration curve from leaderboard steps
             ├── country_merge.py       ← merges two submissions by country
-            ├── final_assemble.sh      ← thresholds + French rules + validator in one command
-            │   ── research, not needed to reproduce ──
-            └── rule_sim.py, probe1_sim.py, corrector_sim.py, proxy_mine.py, proxy_cache.py,
-                swap_asymmetry.py, twin_groups.py, frce_probe.py, france_rescue.py
+            └── france_noise_accept.py ← French noise-variant recovery + high-confidence rule reversal (last step)
 ```
 
-> **About `experiments/`.** Despite the name, most of it is production code: the final file needs the candidate,
-> classifier, re-ranking, French-adaptation and decision-layer scripts listed above. The research scripts at the end
-> are the simulations behind the French rules; the organisers' guidelines ask for the code used for experiments,
-> training and inference, so they are kept.
+Research code from the competition (simulations, probes, analyses) is not part of the package; only the scripts the
+final output needs are included.
 
 ## 5. Pipeline
 
@@ -317,11 +189,11 @@ flowchart TD
 | # | Stage | Input → output | Scripts |
 |---|---|---|---|
 | 1 | Normalise | raw TSV → normalised parquet (`work*/{split}_s1`, `_cand`) | `prep.py`, `blocking.py` |
-| 2 | Candidates | normalised records → pair list (`*_pairs_*.parquet`) | `run.py pairs`, `n4_search.py`, `ret_*.py` |
+| 2 | Candidates | normalised records → pair list (`*_pairs_*.parquet`) | `run.py pairs`, `ret_train.py`, `knn_search.py` |
 | 3 | Features | pairs → feature table | `features.py`, `rarity_cols.py`, `embed.py`, `ce.py` |
 | 4 | Classifier | features → probability per pair (OOF + test) | `retrain_extra.py` |
 | 5 | Re-rank + stack | band pairs → re-scored probability | `band_export.py`, `ce.py`, `ce2_band.py` |
-| 6 | French adaptation | French test records → adapted cross-encoders | `fr_synth.py`, `ce.py`, `kaggle/frce_train.py` |
+| 6 | French adaptation | French test records → adapted cross-encoders | `fr_synth.py`, `ce.py` |
 | 7 | Decisions | probabilities → matches per country | `final_assemble.sh`, `country_threshold.py`, `france_rule.py`, `france_probe.py` |
 | 8 | Merge + recover | two submissions → final file | `country_merge.py`, `france_noise_accept.py` |
 
@@ -395,7 +267,7 @@ leaderboard (above CV) and **France 0.9673**. French recall (≈ 0.90) is the re
 - Python 3.12 · Polars (streaming parquet) · NumPy · RapidFuzz · scikit-learn · SciPy · LightGBM · Optuna
 - PyTorch + Hugging Face transformers **4.57.6** (pinned: 5.x changes cross-encoder logits)
 - CPU: Linux / WSL2, 32 cores, 54 GB RAM (blocking peaks at ~36 GB)
-- GPU: Kaggle 2×T4 and P100 notebooks, one RTX 3050 laptop for scoring
+- GPU: Kaggle 2×T4 and P100, one RTX 3050 laptop for scoring
 
 </details>
 

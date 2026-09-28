@@ -4,7 +4,7 @@ Reads work/train_features.parquet (run.py train --save-features) and work/test_f
 then the same 5-fold GroupKFold CV / threshold grid / one-owner rule / final fit as run.py train, and writes a
 submission. Extra columns must be computed per split (fitted on train+test text where stats are involved).
 
-python experiments/retrain_extra.py --params code/business_entity_resolution/best_params.json \
+python pipeline/retrain_extra.py --params code/business_entity_resolution/best_params.json \
     --extra 'work/tfw_{split}.parquet' --out output_v81 --tag v81 [--seeds 3]
 """
 import argparse

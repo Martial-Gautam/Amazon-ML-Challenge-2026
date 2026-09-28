@@ -7,7 +7,7 @@ G-common = candidate j of S1 i where
   - no other candidate record with j's (core, house key) and no S1 with j's (core, house key).
 Output: parquet (source1_entity_id, e2) for France S1; apply with france_probe.py --mode reject.
 
-python experiments/france_rule.py --work work10 --pairs work10/test_prob_v10ce2.parquet --out work10/g_test_common.parquet
+python pipeline/france_rule.py --work work10 --pairs work10/test_prob_v10ce2.parquet --out work10/g_test_common.parquet
 """
 import argparse
 from pathlib import Path

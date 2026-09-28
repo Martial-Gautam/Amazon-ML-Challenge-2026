@@ -7,7 +7,7 @@ used by run.py --extra. Label-free counts over ALL records of that split (so tes
   name_df_s1_eq1, name_df_cand_le1: scale-free flags (raw counts shift with split size)
 Empty core -> counts null.
 
-python experiments/rarity_cols.py --work work9 --tag k30_p1500_ap_ak_use20_rs_knn5_re
+python pipeline/rarity_cols.py --work work9 --tag k30_p1500_ap_ak_use20_rs_knn5_re
 """
 import argparse
 from pathlib import Path

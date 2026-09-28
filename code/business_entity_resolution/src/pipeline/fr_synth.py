@@ -9,7 +9,7 @@ fine-tuning the ce2 cross-encoder on France, built only from the TEST French rec
 Writes <out>/text/{train,test}_{s1,cand}.parquet (idx, business_name, business_address) and <out>/pairs/ce_train.parquet
 (i, j, y) + test_pairs.parquet (French pairs to score) in ce.py's layout.
 
-python experiments/fr_synth.py --out work9/frce
+python pipeline/fr_synth.py --out work9/frce
 """
 import argparse
 import random
