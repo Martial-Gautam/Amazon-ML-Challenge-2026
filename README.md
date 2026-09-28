@@ -109,9 +109,6 @@ A **two-stage matcher** on a **high-recall candidate set**, followed by a **per-
 .
 ├── README.md                          ← this file
 ├── Documentation_template.md          ← methodology write-up (competition template)
-├── output/                            ← only in the submission zip, not in the git repository
-│   ├── matching_results.tsv           ← final matches (= the leaderboard upload, LB 0.986691)
-│   └── candidate_pairs.tsv            ← the pairs the model scored (~25 per S1)
 └── code/business_entity_resolution/
     ├── README.md                      ← same file as this one
     ├── reproduce.py                   ← runs the whole pipeline: python reproduce.py --data <student_resource>
