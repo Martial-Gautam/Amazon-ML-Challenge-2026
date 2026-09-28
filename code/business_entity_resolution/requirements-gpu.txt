@@ -1,0 +1,5 @@
+# GPU scripts (embed.py, ce.py, Kaggle kernels under experiments/kaggle). All ce/ce2/ce3/embedding scores in the
+# submission were computed on Kaggle with transformers 4.57.6; transformers 5.x gives different cross-encoder scores
+# (checked 27 Sep: pearson 0.996, up to 7 logits off on borderline pairs), so pin it for reproduction.
+transformers==4.57.6
+torch  # CUDA build matching the machine's driver (e.g. --index-url https://download.pytorch.org/whl/cu128)
