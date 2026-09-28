@@ -31,36 +31,24 @@ across 1.7 M test records in three countries, one of them never seen in training
 
 ## 1. Reproduce the output, step by step
 
-The whole pipeline runs from **one script**. Run everything from the **package root**, the folder that holds `code/`
-and `Documentation_template.md`.
+Two commands, run from the **package root** (the folder that holds `code/` and `Documentation_template.md`).
 
-**Step 1 · Put the data and the validator next to `code/`**
+**Step 1 · Install**
 ```bash
-ln -s /path/to/student_resource/dataset dataset
-ln -s /path/to/student_resource/utils   utils
-```
-
-**Step 2 · Install**
-```bash
-python3 -m venv .venv && source .venv/bin/activate
 pip install -r code/business_entity_resolution/requirements.txt
 pip install -r code/business_entity_resolution/requirements-gpu.txt   # torch + transformers==4.57.6 (CUDA build)
 ```
 
-**Step 3 · Run**
+**Step 2 · Run**
 ```bash
-bash code/business_entity_resolution/reproduce.sh
+python code/business_entity_resolution/reproduce.py --data /path/to/student_resource
 ```
+`--data` is the organisers' `student_resource` folder (it holds `dataset/` and `utils/`). The script checks the
+environment first, runs every stage, validates the result with the organisers' validator, and writes
+`output/matching_results.tsv` and `output/candidate_pairs.tsv`.
 
-**Step 4 · Validate**
-```bash
-python3 utils/validate_submission.py --matching output/matching_results.tsv \
-    --candidate output/candidate_pairs.tsv --test-dir dataset/test --check-ids
-# expected: 1,732,544 rows in each file, 5,817,951 matches, "PASS — no blocking issues found"
-```
-
-`reproduce.sh` runs seven stages in order. A step whose output already exists is skipped, so an interrupted run
-resumes where it stopped, and `bash code/business_entity_resolution/reproduce.sh v10 final` runs only the named stages.
+<details>
+<summary><b>Stages, hardware and options</b></summary>
 
 | Stage | What it builds | Hardware |
 |---|---|---|
@@ -70,13 +58,16 @@ resumes where it stopped, and `bash code/business_entity_resolution/reproduce.sh
 | `rerank` | e5-base re-ranker (one model per S1 half), stacking on v9, French look-alike lists | GPU + CPU |
 | `france` | two domain-adapted French cross-encoders | GPU |
 | `v10` | v10 build: retriever candidates, 3-seed classifier, re-ranker stacking (source of the US/India rows) | CPU + GPU |
-| `final` | per-country decisions, merge, French noise-variant recovery, validation → `output/` | CPU |
+| `final` | per-country decisions, merge, French noise-variant recovery → `output/` | CPU |
 
-Compute used: a 32-core, 54 GB Linux machine (blocking peaks at ~36 GB) and one 16 GB GPU at a time (Kaggle T4/P100).
-Use `PY=/path/to/python` to choose the interpreter.
+- A step whose output already exists is skipped, so an interrupted run resumes where it stopped.
+- `--stage v10 --stage final` runs only the named stages.
+- Compute used: a 32-core, 54 GB Linux machine (candidate generation peaks at ~36 GB) and one 16 GB GPU at a time
+  (Kaggle T4 / P100). Linux, macOS or WSL.
+- GPU scores can differ slightly across GPU types, so a full rebuild may change a few borderline French pairs.
+  Keep `transformers==4.57.6`: later versions change cross-encoder scores.
 
-> **Note.** GPU scores can differ slightly across GPU types, so a full rebuild may change a few borderline French
-> pairs. Keep `transformers==4.57.6`: later versions change cross-encoder scores.
+</details>
 
 ## 2. The problem
 
@@ -123,7 +114,7 @@ A **two-stage matcher** on a **high-recall candidate set**, followed by a **per-
 │   └── candidate_pairs.tsv            ← the pairs the model scored (~25 per S1)
 └── code/business_entity_resolution/
     ├── README.md                      ← same file as this one
-    ├── reproduce.sh                   ← runs the whole pipeline, stage by stage
+    ├── reproduce.py                   ← runs the whole pipeline: python reproduce.py --data <student_resource>
     ├── requirements.txt               ← pinned CPU stack (polars, lightgbm, rapidfuzz, scikit-learn, scipy …)
     ├── requirements-gpu.txt           ← torch + transformers==4.57.6 for the GPU steps
     ├── best_params.json               ← Optuna-tuned LightGBM parameters
@@ -138,7 +129,7 @@ A **two-stage matcher** on a **high-recall candidate set**, followed by a **per-
         ├── ce.py                      ← GPU: fine-tunes or applies a cross-encoder (e5-small or e5-base)
         ├── tune.py                    ← Optuna search for LightGBM → best_params.json
         ├── run.py                     ← core driver: stages pairs, train, predict
-        └── pipeline/                  ← later stages, one module per stage (python pipeline/<module>.py <subcommand>)
+        └── pipeline/                  ← later stages, one module per stage, called by reproduce.py
             ├── candidates.py          ← GPU: train-retriever (dense retriever), search (nearest-neighbour candidates)
             ├── extra_features.py      ← rarity (name-rarity counts), word-tfidf (word TF-IDF cosines, v9 only)
             ├── classifier.py          ← LightGBM: 5-fold GroupKFold OOF, threshold search, multi-seed final fit
