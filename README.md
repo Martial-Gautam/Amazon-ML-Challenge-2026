@@ -38,7 +38,7 @@ Run the commands from the **package root** (the folder that holds `code/` and `D
 
 **Step 1 · Data**
 
-Keep the organisers' `student_resource` folder (with `dataset/` and `utils/`) anywhere on the machine; its path is
+Keep the `student_resource` folder (with `dataset/` and `utils/`) provided by the Amazon anywhere on the machine; its path is
 passed to the run command in Step 3.
 
 **Step 2 · Install**
