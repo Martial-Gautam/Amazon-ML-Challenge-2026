@@ -2,4 +2,4 @@
 # submission were computed on Kaggle with transformers 4.57.6; transformers 5.x gives different cross-encoder scores
 # (checked 27 Sep: pearson 0.996, up to 7 logits off on borderline pairs), so pin it for reproduction.
 transformers==4.57.6
-torch  # CUDA build matching the machine's driver (e.g. --index-url https://download.pytorch.org/whl/cu128)
+torch==2.11.0  # CUDA 12.8 build used for the CPU scoring (Kaggle notebooks used their preinstalled torch): --index-url https://download.pytorch.org/whl/cu128
