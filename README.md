@@ -74,7 +74,7 @@ python utils/validate_submission.py --matching output/matching_results.tsv \
 - **Metric:** F0.5 per S1 record, averaged over all S1 records, singletons included. Precision weighs twice as much as recall.
 - **The hard part:** France appears only in test, so everything French has to be learned from unlabelled test records.
 
-What the data showed, and how it shaped the design:
+**Exploratory data analysis (EDA)**, and how it shaped the design:
 
 | EDA finding | Design consequence |
 |---|---|
@@ -88,46 +88,51 @@ What the data showed, and how it shaped the design:
 
 ```mermaid
 flowchart TD
-    A[("Source 1 / 2 / 3 records")] --> B["Normalisation<br/>transliteration · abbreviations · legal forms · house numbers"]
-    B --> C["Candidate generation, per country<br/>key blocking + fuzzy re-rank · e5 nearest neighbours · dense retriever<br/>~25 candidates per S1 · recall 99.2%"]
-    C --> D["LightGBM pairwise classifier<br/>~53 string, rarity and neural features · CV 0.98802"]
+    A[("Source 1 / 2 / 3 records")] --> B["Data preprocessing<br/>transliteration · abbreviations · legal forms · house numbers"]
+    B --> C["Candidate generation (blocking), per country<br/>key blocking + fuzzy re-rank · e5 nearest neighbours · dense retriever<br/>~25 candidates per S1 · recall 99.2%"]
+    C --> D["Feature engineering + LightGBM classifier<br/>~53 string, rarity and neural features · CV 0.98802"]
     D --> F{"uncertain pair?<br/>0.02 ≤ p ≤ 0.98"}
     F -- "no" --> K["Match probability"]
-    F -- "yes · US / India" --> G["Cross-encoder re-ranker<br/>multilingual-e5-base"]
-    F -- "yes · France" --> H["2 domain-adapted cross-encoders<br/>self-trained on French test records"]
-    G --> I["Stacked LightGBM<br/>CV 0.98876"]
+    F -- "yes · US / India" --> G["Cross-encoder re-ranker<br/>fine-tuned multilingual-e5-base"]
+    F -- "yes · France" --> H["Domain adaptation<br/>2 cross-encoders self-trained on French test records"]
+    G --> I["Stacking<br/>LightGBM meta-model · CV 0.98876"]
     H --> I
     I --> K
-    K --> L["US / India decisions<br/>one-to-one · threshold 0.58 · ambiguity rejection"]
-    K --> M["France decisions<br/>one-to-one · threshold 0.91 · look-alike rules · noise recovery"]
+    K --> L["Post-processing · US / India<br/>one-to-one · threshold 0.58 · ambiguity rejection"]
+    K --> M["Post-processing · France<br/>one-to-one · threshold 0.91 · look-alike rules · noise recovery"]
     L --> O[("matching_results.tsv")]
     M --> O
 ```
 
-**Candidate generation.** Records are normalised (Indic scripts transliterated, abbreviations expanded, legal forms
-such as Ltd / LLC / SARL removed, house numbers extracted). Per country, IDF-weighted keys on name tokens, consonant
+**Data preprocessing.** Records are cleaned and normalised: Indic scripts transliterated, abbreviations expanded, legal
+forms such as Ltd / LLC / SARL removed, house numbers extracted.
+
+**Candidate generation (blocking).** Per country, IDF-weighted keys on name tokens, consonant
 skeletons and address parts give a pool of 1,500 candidates that fuzzy matching re-ranks to 20. Two neural sources add
 the records a key would miss: the nearest neighbours of an off-the-shelf `multilingual-e5-small` embedding (top 5) and
-of a dense retriever fine-tuned contrastively on training matches (top 10). Result: ~25 candidates per S1 at 99.2 %
+of a dense retriever fine-tuned with contrastive learning and hard negatives on training matches (top 10). Result: ~25 candidates per S1 at 99.2 %
 recall.
 
-**LightGBM pairwise classifier.** Every candidate pair gets ~53 features: RapidFuzz string similarities, Jaccard and
+**Feature engineering.** Every candidate pair gets ~53 features: RapidFuzz string similarities, Jaccard and
 character TF-IDF cosines, postcode and house-number agreement, name rarity (how many records share the name), blocking
 context, the e5 cosine of names and addresses, and the score of a small `multilingual-e5-small` cross-encoder.
-LightGBM with Optuna-tuned parameters, 5-fold cross-validation grouped by S1, final model averaged over 3 seeds:
-**CV 0.98802**.
 
-**Cross-encoder re-ranker.** Pairs the classifier is unsure about (probability 0.02–0.98, ~1.5 M test pairs) are
-re-read by a `multilingual-e5-base` cross-encoder that sees both records together ("name | address" of each). It is
-trained twice, once per half of the S1 records, so every training pair is scored by a model that never saw it. A small
-stacked LightGBM combines the classifier's score with the cross-encoder's: **CV 0.98876**.
+**Model: LightGBM (gradient boosting).** Hyperparameters tuned with Optuna, 5-fold GroupKFold cross-validation by S1
+(out-of-fold predictions), final model an ensemble of 3 seeds: **CV 0.98802**.
 
-**France: domain-adapted cross-encoders.** France has no labels. We built 885,573 French training pairs from the test
-records alone: 300 k pairs the model is at least 99.5 % sure of as positives, and synthetic negatives that copy the data
-generator's look-alikes (one generic word swapped, decoy words such as *Groupe* or *Holding* at a nearby house number).
-Both re-ranker models are fine-tuned on them for one epoch, and their average replaces the re-ranker for French pairs.
+**Re-ranking and stacking.** Pairs the classifier is unsure about (probability 0.02–0.98, ~1.5 M test pairs) are
+re-read by a `multilingual-e5-base` cross-encoder, fine-tuned (transfer learning) to read both records together ("name | address" of each). It is
+trained twice, once per half of the S1 records, so every training pair is scored by a model that never saw it. A LightGBM
+meta-model stacks the classifier's score with the cross-encoder's: **CV 0.98876**.
 
-**Decisions.** Each S2/S3 record goes to at most one S1, its highest-scoring one. US/India: threshold 0.58, and a match
+**Domain adaptation for France.** France has no labels, so we used self-training (pseudo-labelling) with synthetic data
+augmentation: 885,573 French training pairs built from the test records alone, with 300 k pairs the model is at least
+99.5 % sure of as pseudo-labelled positives, and synthetic hard negatives that copy the data generator's look-alikes (one generic word swapped, decoy words such as *Groupe* or *Holding* at a nearby house number).
+Both re-ranker models are fine-tuned on them for one epoch, and their ensemble average replaces the re-ranker for French
+pairs.
+
+**Post-processing and threshold optimisation.** Each S2/S3 record goes to at most one S1, its highest-scoring one
+(one-to-one assignment). US/India: threshold 0.58, optimised for F0.5 on out-of-fold predictions, and a match
 is dropped when the runner-up S1 scores ≥ 0.5 within 0.2 of it: **CV 0.98921**. France: threshold 0.91, chosen with a
 calibration curve fitted to leaderboard results; a French match is rejected when its name differs from the S1's by one
 common word and no other record carries that name (a look-alike business), unless the swapped word is a known noise
@@ -183,7 +188,7 @@ code/business_entity_resolution/
 ## 6. Details
 
 <details>
-<summary><b>Leakage control</b></summary>
+<summary><b>Validation and leakage prevention</b></summary>
 
 - Cross-validation is grouped by S1 record: all candidates of one S1 stay in one fold.
 - The small cross-encoder is trained on 99,948 S1 records that the classifier never trains on.

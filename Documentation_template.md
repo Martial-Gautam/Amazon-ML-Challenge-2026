@@ -23,7 +23,7 @@ F0.5), with a cross-validated **0.98921** on US and India, using no external dat
 The training data has 2.2 million Source 1 businesses and 10.3 million Source 2/3 records from the US and India. The
 test set adds France (15 % of the 1.7 million test businesses), with no French examples to learn from.
 
-What we learned from the data:
+**Exploratory data analysis (EDA)** showed:
 
 - **The data follows the same recipe in every country.** US and India both have 3.46 true copies per business, 5.6 %
   of businesses with no copy at all, and 74 % of Source 2/3 records matched. So what the model learns on US and India
@@ -57,8 +57,8 @@ The models doing the heavy lifting:
 
 All models are MIT-licensed and far below the 8 billion parameter limit.
 
-Before anything else, every record is normalised: native scripts are transliterated to Latin letters, abbreviations
-expanded, legal forms removed, and house numbers extracted.
+**Data preprocessing:** before anything else, every record is cleaned and normalised: native scripts are transliterated
+to Latin letters, abbreviations expanded, legal forms removed, and house numbers extracted.
 
 ---
 
@@ -71,7 +71,7 @@ likely candidates per business, always within the same country.
   + house number combinations, and address word pairs. Keys are weighted by rarity (IDF), the best 1,500 records are
   re-ranked by fuzzy string similarity, and the top 20 are kept. Extra sources add what keys miss:
   - the 5 nearest records by `multilingual-e5-small` embedding similarity;
-  - the 10 nearest records by our fine-tuned dense retriever;
+  - the 10 nearest records by our dense retriever, fine-tuned with contrastive learning and hard negatives;
   - a rescue rule that keeps a pair when the Source 1 business is that record's best match, and a rule for records
     with an empty address but a name unique in their country.
 - **Candidate pairs generated:** 43.9 million test pairs, about 25 per business.
@@ -83,7 +83,7 @@ likely candidates per business, always within the same country.
 
 ## 4. Matching Model
 
-**Features used:**
+**Features used (feature engineering):**
 - Name features: fuzzy string ratios (RapidFuzz) on the full name, the name without legal words, and its consonant
   skeleton; Jaro-Winkler; character 3-gram TF-IDF cosine; **name rarity**, meaning how many businesses and records share
   the exact name (our largest single feature gain, +0.0038 CV).
@@ -92,23 +92,24 @@ likely candidates per business, always within the same country.
   names and of addresses; the score of a small `multilingual-e5-small` cross-encoder trained on 99,948 businesses that
   the matcher never trains on, so the feature is never over-optimistic.
 
-**Model type:** three models in sequence.
-1. **LightGBM matcher** (parameters tuned with Optuna, trained on 2.1 million businesses, average of 3 seeds) scores all
-   43.9 million pairs: CV 0.98802.
-2. **Cross-encoder re-ranker:** the 1.5 million pairs with a probability between 0.02 and 0.98 go to a
-   `multilingual-e5-base` cross-encoder that reads both records at once. It is trained twice, on each half of the
-   businesses, so no training pair is scored by a model that saw it. A small LightGBM combines the matcher's and the
-   cross-encoder's scores: CV 0.98876.
-3. **French cross-encoders:** we built 885,573 French training pairs from the test records alone. Positives are
-   300,000 French pairs the model is at least 99.5 % sure of; negatives are synthetic look-alikes made the way the data
+**Model type:** gradient-boosted trees and fine-tuned transformers, combined by stacking.
+1. **LightGBM matcher (gradient boosting):** hyperparameters tuned with Optuna, trained on 2.1 million businesses with
+   5-fold GroupKFold cross-validation, final model an ensemble of 3 seeds. It scores all 43.9 million pairs: CV 0.98802.
+2. **Cross-encoder re-ranker and stacking:** the 1.5 million pairs with a probability between 0.02 and 0.98 go to a
+   `multilingual-e5-base` cross-encoder, fine-tuned (transfer learning) to read both records at once. It is trained twice, on each half of the
+   businesses, so no training pair is scored by a model that saw it. A LightGBM meta-model
+   stacks the matcher's and the cross-encoder's scores: CV 0.98876.
+3. **Domain adaptation for France (self-training):** we built 885,573 French training pairs from the test records alone.
+   Pseudo-labelled positives are 300,000 French pairs the model is at least 99.5 % sure of; synthetic hard negatives
+   (data augmentation) are look-alikes made the way the data
    was generated (one generic word swapped, decoy words at a nearby house number). Both cross-encoders were fine-tuned
-   on them for one epoch, and their average replaces the re-ranker for French pairs (about +0.011 on France on the
+   on them for one epoch, and their ensemble average replaces the re-ranker for French pairs (about +0.011 on France on the
    leaderboard).
 
-**Threshold selection method:** each Source 2/3 record goes to at most one business, its most probable one. The
-US/India threshold (0.58) maximises macro F0.5 on out-of-fold predictions; a match is also dropped when a second
+**Threshold selection method (post-processing):** each Source 2/3 record goes to at most one business, its most probable
+one (one-to-one assignment). The US/India threshold (0.58) maximises macro F0.5 on out-of-fold predictions; a match is also dropped when a second
 business scores almost as high (at least 0.5 and within 0.2), which brings CV to **0.98921**. France has no labels, so
-its threshold (0.91) was chosen with a small calibration model fitted to leaderboard results. For France we also reject
+its threshold (0.91) was chosen with a probability-calibration model fitted to leaderboard results. For France we also reject
 a match whose name differs from the business's name by one common word (a typical look-alike), unless that word is a
 known noise word such as *Services* or *Associés* and both French models are confident.
 
