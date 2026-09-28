@@ -151,40 +151,37 @@ final output needs are included.
 ```mermaid
 flowchart TD
     A[("S1 / S2 / S3 TSV<br/>train + test")] --> B["Normalise<br/>prep.py · blocking.py"]
-    B --> C["Candidate generation per country<br/>IDF keys · fuzzy re-rank · e5 kNN · dense retriever<br/>~25 per S1 · recall 99.2%"]
-    C --> D["Pair features<br/>string · rarity · context · e5 cosine · small cross-encoder"]
-    D --> E["Pairwise classifier<br/>LightGBM · 3 seeds · CV 0.98802"]
-    E --> F{"0.02 ≤ p ≤ 0.98 ?"}
-    F -- "no" --> K["Final pair probability"]
-    F -- "yes · US / India" --> G["Cross-encoder re-ranker<br/>e5-base · 2-fold out-of-fold"]
-    F -- "yes · France" --> H["2 domain-adapted cross-encoders<br/>self-training on French test records"]
-    G --> I["Stacked meta-classifier<br/>LightGBM · CV 0.98876"]
+    B --> C["Candidates per country<br/>IDF keys · fuzzy re-rank · e5 kNN · dense retriever<br/>~25 per S1 · recall 99.2%<br/>run.py pairs · candidates.py"]
+    C --> D["Pair features<br/>string · rarity · context · e5 cosine · small cross-encoder<br/>features.py · extra_features.py · embed.py · ce.py"]
+    D --> E["Pairwise classifier · LightGBM<br/>5-fold OOF · 3 seeds · CV 0.98802<br/>classifier.py"]
+    E --> F{"uncertainty band<br/>0.02 ≤ p ≤ 0.98 ?"}
+    F -- "no" --> K["Pair probability"]
+    F -- "yes · US / India" --> G["Cross-encoder re-ranker<br/>e5-base · 2-fold out-of-fold · ce.py"]
+    F -- "yes · France" --> H["2 domain-adapted cross-encoders<br/>self-training on French test records<br/>france.py self-train-data · ce.py"]
+    G --> I["Stacked meta-classifier · LightGBM<br/>CV 0.98876 · rerank.py stack"]
     H --> I
     I --> K
-    K --> L["US / India decisions<br/>one-to-one · t 0.58 · ambiguity rejection<br/>CV 0.98921"]
-    K --> M["France decisions<br/>t 0.91 · look-alike rules · noise-variant recovery"]
-    L --> N["Merge by country + validate<br/>decide.py merge · validate_submission.py"]
+    K --> L["US / India rows · v10 build<br/>one-to-one · t 0.58 · ambiguity rejection<br/>CV 0.98921 · decide.py assemble"]
+    K --> M["French rows · v9 build<br/>one-to-one · t 0.91 · look-alike rules<br/>decide.py assemble · france.py rules"]
+    L --> N["Merge by country<br/>decide.py merge"]
     M --> N
-    N --> O[("output/matching_results.tsv<br/>output/candidate_pairs.tsv")]
+    N --> R["French noise-variant recovery<br/>france.py recover"]
+    R --> V["Validate<br/>validate_submission.py"]
+    V --> O[("output/matching_results.tsv<br/>output/candidate_pairs.tsv")]
 ```
 
 </details>
 
-<details>
-<summary><b>Stages, inputs and scripts</b></summary>
-
-| # | Stage | Input → output | Scripts |
-|---|---|---|---|
-| 1 | Normalise | raw TSV → normalised parquet (`work*/{split}_s1`, `_cand`) | `prep.py`, `blocking.py` |
-| 2 | Candidates | normalised records → pair list (`*_pairs_*.parquet`) | `run.py pairs`, `candidates.py` |
-| 3 | Features | pairs → feature table | `features.py`, `extra_features.py`, `embed.py`, `ce.py` |
-| 4 | Classifier | features → probability per pair (OOF + test) | `classifier.py` |
-| 5 | Re-rank + stack | band pairs → re-scored probability | `rerank.py`, `ce.py` |
-| 6 | French adaptation | French test records → adapted cross-encoders | `france.py self-train-data`, `ce.py` |
-| 7 | Decisions | probabilities → matches per country | `decide.py`, `france.py rules / apply` |
-| 8 | Merge + recover | two submissions → final file | `decide.py merge`, `france.py recover` |
-
-</details>
+| # | Step | What happens | Result | Code | `reproduce.py` stage |
+|---|---|---|---|---|---|
+| 1 | Normalise | transliteration, abbreviations, legal forms, house-number keys | normalised parquet (`work*/{split}_s1`, `_cand`) | `prep.py`, `blocking.py` | `base`, `v9`, `v10` |
+| 2 | Candidates | per-country key blocking + fuzzy re-rank; nearest neighbours from plain e5 and the dense retriever | ~25 candidates per S1, recall 99.2 % | `run.py pairs`, `candidates.py` | `neighbours`, `v9`, `v10` |
+| 3 | Features | ~53 string, rarity, context and neural features per pair | feature table | `features.py`, `extra_features.py`, `embed.py`, `ce.py` | `base`, `v9`, `v10` |
+| 4 | Classifier | LightGBM, 5-fold GroupKFold by S1, 3 seeds | probability per pair, CV 0.98802 | `classifier.py` | `v9`, `v10` |
+| 5 | Re-rank + stack | e5-base cross-encoder on the uncertainty band, then a stacked meta-classifier | re-scored probability, CV 0.98876 | `ce.py`, `rerank.py` | `rerank`, `v10` |
+| 6 | French adaptation | self-training set from the French test records; two cross-encoders fine-tuned on it | French pair scores | `france.py self-train-data`, `ce.py` | `france` |
+| 7 | Decisions | one-to-one assignment; US/India t 0.58 + ambiguity rejection; France t 0.91 + look-alike rules | one submission per build | `decide.py assemble`, `france.py rules` | `final` |
+| 8 | Merge + recover | US/India rows from v10, French rows from v9; French noise-variant recovery; validation | `output/` | `decide.py merge`, `france.py recover` | `final` |
 
 ## 6. Results
 
