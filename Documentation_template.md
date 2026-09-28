@@ -42,6 +42,10 @@ test set adds France (15 % of the 1.7 million test businesses), with no French e
 ### 2.2 Solution Strategy
 
 **Approach Type:** Blocking + classifier + cross-encoder re-ranking (hybrid).  
+**Formulation:** pairwise classification followed by constrained assignment: generate a few candidates per business,
+score each pair with the probability that both records are the same business, and accept pairs above a threshold with
+every Source 2/3 record assigned to at most one business. Because France has no labels, France is also an
+**unsupervised domain adaptation** problem; country is treated as an open set and never one-hot encoded.  
 **Core Innovation:** A transformer cross-encoder re-reads the uncertain pairs. For France, a country the model never
 saw, the same cross-encoder is adapted by self-training on the unlabelled French test records, with synthetic
 look-alikes that mimic how the data was generated.
@@ -65,6 +69,20 @@ All models are MIT-licensed and far below the 8 billion parameter limit.
 **Data preprocessing:** before anything else, every record is cleaned and normalised: native scripts are transliterated
 to Latin letters, abbreviations expanded, legal forms removed, and house numbers extracted.
 
+### 2.3 Validation Setup
+
+- **5-fold GroupKFold grouped by business:** all candidates of one Source 1 business stay in the same fold, so the model
+  is never validated on a business it trained on. A plain split over pairs would leak between pairs of the same business.
+- **The CV score is the competition metric itself:** macro F0.5 over all sampled businesses, including singletons and
+  businesses whose true copies were not found. Thresholds are chosen on out-of-fold predictions over a grid from 0.20 to
+  0.94 in steps of 0.02.
+- **No leakage from the neural features:** the small cross-encoder and the dense retriever are trained only on 99,948
+  businesses that the LightGBM matcher never trains or validates on; the e5-base re-ranker is trained twice, once per half
+  of the businesses, and each model scores only the half it did not see.
+- **Unseen-country checks:** training on one country and scoring the other (US → India, India → US) simulates France. An
+  early matcher scored 0.822 / 0.946 this way; the later matcher with the cross-encoder feature scored 0.937 / 0.969.
+- **Acceptance rule:** a change was kept only for a CV gain above noise (about +0.0005), then checked on the leaderboard.
+
 ---
 
 ## 3. Candidate Generation (Blocking)
@@ -77,12 +95,25 @@ likely candidates per business, always within the same country.
   re-ranked by fuzzy string similarity, and the top 20 are kept. Extra sources add what keys miss:
   - the 5 nearest records by `multilingual-e5-small` embedding similarity;
   - the 10 nearest records by our dense retriever, fine-tuned with contrastive learning and hard negatives;
-  - a rescue rule that keeps a pair when the Source 1 business is that record's best match, and a rule for records
-    with an empty address but a name unique in their country.
+  - a rescue rule that keeps a pair when the Source 1 business is that record's best match (+0.0010 CV);
+  - a rule for records with an empty address whose name is unique among the country's businesses (97.6 % of these
+    pairs are true matches; it recovers 4.9 % of the matches the other sources missed).
 - **Candidate pairs generated:** 43.9 million test pairs, about 25 per business.
 - **How you ensured true matches were not lost:** each source was kept only if it found enough extra true matches for
-  the pairs it added, measured on training data. Recall of true matches grew from 92.6 % to **99.2 %**. The remaining
-  misses are mostly records with an empty address and a common name, which the data itself cannot resolve.
+  the pairs it added, measured on training data. The remaining misses are mostly records with an empty address and a
+  common name, which the data itself cannot resolve.
+
+| Version | Change | Candidate recall |
+|---|---|:---:|
+| v1 | composite-key blocking | 81 % |
+| v2 | pool of 300 + fuzzy re-rank to top 20 | 90 % |
+| v3 | street-name and digit-drop address keys, pool of 600 | 93.0 % |
+| v8 | pool of 1,500, partial-address keys | 96.6 % |
+| v9 | native-script dictionary, rescue rule, e5 neighbours, empty-address rule | 97.8 % |
+| v10 | fine-tuned dense retriever | **99.2 %** |
+
+**Candidate set size.** Since smaller candidate sets rank higher in the final evaluation, we keep the top 20 from the key
+source, not 30: the same CV (0.9487 against 0.9489) with 33 % fewer pairs. Keeping only 10 cost too much (0.9468).
 
 ---
 
@@ -110,6 +141,17 @@ likely candidates per business, always within the same country.
    was generated (one generic word swapped, decoy words at a nearby house number). Both cross-encoders were fine-tuned
    on them for one epoch, and their ensemble average replaces the re-ranker for French pairs (about +0.011 on France on the
    leaderboard).
+
+**Training details:**
+
+| Model | Key settings |
+|---|---|
+| LightGBM matcher | Optuna-tuned: learning rate 0.041, 286 leaves, min child samples 175, feature fraction 0.50, bagging 0.95, L1 0.096, L2 3.16, positive-class weight 1.21, 1,202 trees; average of 3 seeds |
+| Dense retriever (e5-small) | contrastive InfoNCE loss, temperature 0.05, 4 epochs, learning rate 3e-5, 256 queries per batch, one hard negative per query |
+| Small cross-encoder (e5-small) | 2.94 M pairs, 1 epoch, learning rate 5e-5, max length 96 tokens |
+| Re-ranker cross-encoder (e5-base) | one model per half of the businesses, 1 epoch, learning rate 3e-5, batch 64 |
+| French cross-encoders (e5-base) | 885,573 French pairs, 1 epoch, learning rate 2e-5, batch 64 |
+| Stacking meta-model | LightGBM, 200 trees, 15 leaves, learning rate 0.05 |
 
 **Threshold selection method (post-processing):** each Source 2/3 record goes to at most one business, its most probable
 one (one-to-one assignment). The US/India threshold (0.58) maximises macro F0.5 on out-of-fold predictions; a match is also dropped when a second
@@ -185,3 +227,16 @@ training and test names, and rarity counts and neighbour searches run within eac
 fine-tuned on pairs built from the French test records, using their text only, never labels; the organisers confirmed
 this self-training is allowed. The French decisions were checked with public-leaderboard uploads and with simulations on
 training data.
+
+### C. Scale and Robustness
+
+- **Large-scale processing:** each TSV is streamed into Parquet files, and later steps use Polars lazy scans, so the
+  20 million records never have to sit in memory at once. Nearest-neighbour search is an exact cosine search on the GPU,
+  one country at a time, so no approximate index (such as FAISS) is needed. Transformer inference runs in half precision
+  with length-sorted batches to avoid padding. Peak memory was about 36 GB on a 32-core, 54 GB machine.
+- **Resumable runs:** every stage caches its output, and `reproduce.py` skips any step whose output already exists.
+- **Unseen countries:** no country one-hot encoding or hard-coded country lists, candidate search per country, a
+  multilingual encoder, and French adaptation built only from French test text.
+- **Missing and noisy fields:** empty-address flags, the empty-address candidate rule and name-rarity features for
+  missing addresses; transliteration, accent removal, the native-script dictionary, digit-for-letter repair,
+  abbreviation expansion, consonant skeletons and character n-gram features for noisy names.

@@ -86,6 +86,9 @@ python utils/validate_submission.py --matching output/matching_results.tsv \
 
 ## 3. Solution
 
+The task is framed as **pairwise classification followed by constrained assignment** (each Source 2/3 record goes to
+at most one business), and France, which has no labels, as **unsupervised domain adaptation**.
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="code/business_entity_resolution/docs/pipeline-dark.svg">
   <img alt="Pipeline: preprocessing, candidate generation, feature engineering and LightGBM, then cross-encoder re-ranking (US/India) or domain-adapted cross-encoders (France), stacking, post-processing and the merged output" src="code/business_entity_resolution/docs/pipeline-light.svg" width="100%">
@@ -98,7 +101,8 @@ forms such as Ltd / LLC / SARL removed, house numbers extracted.
 skeletons and address parts give a pool of 1,500 candidates that fuzzy matching re-ranks to 20. Two neural sources add
 the records a key would miss: the nearest neighbours of an off-the-shelf `multilingual-e5-small` embedding (top 5) and
 of a dense retriever fine-tuned with contrastive learning and hard negatives on training matches (top 10). Result: ~25 candidates per S1 at 99.2 %
-recall.
+recall. The key source keeps its top 20, not 30: the same CV (0.9487 against 0.9489) with 33 % fewer
+pairs, since smaller candidate sets rank higher in the final evaluation.
 
 **Feature engineering.** Every candidate pair gets ~53 features: RapidFuzz string similarities, Jaccard and
 character TF-IDF cosines, postcode and house-number agreement, name rarity (how many records share the name), blocking
