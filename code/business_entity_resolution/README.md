@@ -47,6 +47,8 @@ python code/business_entity_resolution/reproduce.py --data /path/to/student_reso
 environment first, runs every stage, validates the result with the organisers' validator, and writes
 `output/matching_results.tsv` and `output/candidate_pairs.tsv`.
 
+**Requirements:** Linux, macOS or WSL · a CUDA GPU with 16 GB · about 40 GB of RAM · several hours for the full run. Keep `transformers==4.57.6` (later versions change cross-encoder scores).
+
 
 ## 2. The problem
 
