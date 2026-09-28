@@ -230,8 +230,6 @@ def main():
         print(f"══ stage {name}", flush=True)
         for out, cmd in all_stages[name]:
             run_step(out, cmd)
-    subprocess.run([sys.executable, "utils/validate_submission.py", "--matching", "output/matching_results.tsv",
-                    "--candidate", "output/candidate_pairs.tsv", "--test-dir", "dataset/test", "--check-ids"], check=True)
     print("done: output/matching_results.tsv, output/candidate_pairs.tsv", flush=True)
 
 

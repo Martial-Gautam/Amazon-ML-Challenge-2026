@@ -31,10 +31,14 @@ across 1.7 M test records in three countries, one of them never seen in training
 
 ## 1. Reproduce the output, step by step
 
-**Requirements:** Linux, macOS or WSL · a CUDA GPU with 16 GB · about 40 GB of RAM ·
-`transformers==4.57.6` (later versions change cross-encoder scores).
-
 Run the commands from the **package root** (the folder that holds `code/` and `Documentation_template.md`).
+
+**Step 0 · Requirements**
+- Linux, macOS or WSL
+- a CUDA GPU with 16 GB of memory
+- about 40 GB of RAM
+- Python 3.12
+- `transformers==4.57.6` (later versions change cross-encoder scores)
 
 **Step 1 · Data**
 
@@ -51,8 +55,14 @@ pip install -r code/business_entity_resolution/requirements-gpu.txt   # torch + 
 ```bash
 python code/business_entity_resolution/reproduce.py --data /path/to/student_resource
 ```
-The script checks the environment first, runs every stage, validates the result with the organisers' validator, and
-writes `output/matching_results.tsv` and `output/candidate_pairs.tsv`.
+The script checks the environment first, runs every stage, and writes `output/matching_results.tsv` and
+`output/candidate_pairs.tsv`.
+
+**Step 4 · Validate**
+```bash
+python utils/validate_submission.py --matching output/matching_results.tsv \
+    --candidate output/candidate_pairs.tsv --test-dir dataset/test --check-ids
+```
 
 ## 2. The problem
 
