@@ -47,27 +47,6 @@ python code/business_entity_resolution/reproduce.py --data /path/to/student_reso
 environment first, runs every stage, validates the result with the organisers' validator, and writes
 `output/matching_results.tsv` and `output/candidate_pairs.tsv`.
 
-<details>
-<summary><b>Stages, hardware and options</b></summary>
-
-| Stage | What it builds | Hardware |
-|---|---|---|
-| `base` | normalised records, raw text, small cross-encoder | CPU + GPU |
-| `neighbours` | dense retriever, then e5 and retriever nearest neighbours (candidate sources) | GPU |
-| `v9` | v9 build: candidates, features, LightGBM classifier (source of the French rows) | CPU + GPU |
-| `rerank` | e5-base re-ranker (one model per S1 half), stacking on v9, French look-alike lists | GPU + CPU |
-| `france` | two domain-adapted French cross-encoders | GPU |
-| `v10` | v10 build: retriever candidates, 3-seed classifier, re-ranker stacking (source of the US/India rows) | CPU + GPU |
-| `final` | per-country decisions, merge, French noise-variant recovery → `output/` | CPU |
-
-- A step whose output already exists is skipped, so an interrupted run resumes where it stopped.
-- `--stage v10 --stage final` runs only the named stages.
-- Compute used: a 32-core, 54 GB Linux machine (candidate generation peaks at ~36 GB) and one 16 GB GPU at a time
-  (Kaggle T4 / P100). Linux, macOS or WSL.
-- GPU scores can differ slightly across GPU types, so a full rebuild may change a few borderline French pairs.
-  Keep `transformers==4.57.6`: later versions change cross-encoder scores.
-
-</details>
 
 ## 2. The problem
 
