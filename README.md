@@ -154,6 +154,9 @@ final output needs are included.
 
 ## 5. Pipeline
 
+<details open>
+<summary><b>Flow chart</b></summary>
+
 ```mermaid
 flowchart TD
     A[("S1 / S2 / S3 TSV<br/>train + test")] --> B["Normalise<br/>prep.py · blocking.py"]
@@ -174,6 +177,11 @@ flowchart TD
     N --> O[("output/matching_results.tsv<br/>output/candidate_pairs.tsv")]
 ```
 
+</details>
+
+<details>
+<summary><b>Stages, inputs and scripts</b></summary>
+
 | # | Stage | Input → output | Scripts |
 |---|---|---|---|
 | 1 | Normalise | raw TSV → normalised parquet (`work*/{split}_s1`, `_cand`) | `prep.py`, `blocking.py` |
@@ -184,6 +192,8 @@ flowchart TD
 | 6 | French adaptation | French test records → adapted cross-encoders | `france.py self-train-data`, `ce.py` |
 | 7 | Decisions | probabilities → matches per country | `decide.py`, `france.py rules / apply` |
 | 8 | Merge + recover | two submissions → final file | `decide.py merge`, `france.py recover` |
+
+</details>
 
 ## 6. Results
 
