@@ -31,24 +31,28 @@ across 1.7 M test records in three countries, one of them never seen in training
 
 ## 1. Reproduce the output, step by step
 
-Two commands, run from the **package root** (the folder that holds `code/` and `Documentation_template.md`).
+**Requirements:** Linux, macOS or WSL · a CUDA GPU with 16 GB · about 40 GB of RAM ·
+`transformers==4.57.6` (later versions change cross-encoder scores).
 
-**Step 1 · Install**
+Run the commands from the **package root** (the folder that holds `code/` and `Documentation_template.md`).
+
+**Step 1 · Data**
+
+Keep the organisers' `student_resource` folder (with `dataset/` and `utils/`) anywhere on the machine; its path is
+passed to the run command in Step 3.
+
+**Step 2 · Install**
 ```bash
 pip install -r code/business_entity_resolution/requirements.txt
 pip install -r code/business_entity_resolution/requirements-gpu.txt   # torch + transformers==4.57.6 (CUDA build)
 ```
 
-**Step 2 · Run**
+**Step 3 · Run**
 ```bash
 python code/business_entity_resolution/reproduce.py --data /path/to/student_resource
 ```
-`--data` is the organisers' `student_resource` folder (it holds `dataset/` and `utils/`). The script checks the
-environment first, runs every stage, validates the result with the organisers' validator, and writes
-`output/matching_results.tsv` and `output/candidate_pairs.tsv`.
-
-**Requirements:** Linux, macOS or WSL · a CUDA GPU with 16 GB · about 40 GB of RAM · several hours for the full run. Keep `transformers==4.57.6` (later versions change cross-encoder scores).
-
+The script checks the environment first, runs every stage, validates the result with the organisers' validator, and
+writes `output/matching_results.tsv` and `output/candidate_pairs.tsv`.
 
 ## 2. The problem
 
