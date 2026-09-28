@@ -1,34 +1,66 @@
-"""ce2 second stage on v8.1's uncertain band (ce2_handoff.md, steps 1-7).
+"""Cross-encoder re-ranking of the uncertainty band and the stacked meta-classifier.
 
-Band = the pairs that have a ce2 score (v8's band, prob in [0.02, 0.98]; exported to Kaggle, scored out-of-fold:
-model h0 scored train half 1, h1 half 0; test = mean of h0 and h1). Run A: LightGBM on [logit(oof_v81), ce2];
-control run B: [logit(oof_v81)] (removes the gain of merely re-calibrating the band). 5-fold GroupKFold by S1.
-Both scored on the FULL decision (p2 on band pairs, v8.1's oof elsewhere; threshold grid x one-owner on/off) over ALL
-sampled S1 (tune_meta.parquet), the definition of cv_all.py. Only if A > B: fit A on all train band
-pairs, write <out>/ (candidate_pairs.tsv copied from <src>/). Stops if a train score comes from its own half's model.
-Any base version (defaults = v8.1 in work/), e.g. v9:
-  python pipeline/ce2_band.py --work work9 --band work9/ce2band --oof work9/oof_v9.parquet \
-      --test-prob work9/test_prob_v9.parquet --meta work9/tune_meta.parquet --src output_v9 --out output_v9ce2
+Subcommands (python pipeline/rerank.py <subcommand> --help):
 
-nice -n 19 python pipeline/ce2_band.py --work work --band work/ce2band
+  export-band  (was band_export.py)
+    Export a matcher's uncertain band for the ce2 (e5-base, out-of-fold halves) score-only kernels.
+    Band = pairs with probability in [0.02, 0.98]: train from the OOF predictions, test from the test predictions.
+    Model h0 (trained on half-0 S1) scores train rows of half 1, h1 scores half 0; both score the whole test band.
+    -> <out>/h0/{train,test}_pairs.parquet, <out>/h1/{train,test}_pairs.parquet (i, j), one Kaggle dataset per half.
+
+    python pipeline/rerank.py export-band --oof work9/oof_v9.parquet --test-prob work9/test_prob_v9.parquet --out work9/band
+
+  stack  (was ce2_band.py)
+    ce2 second stage on v8.1's uncertain band (ce2_handoff.md, steps 1-7).
+
+    Band = the pairs that have a ce2 score (v8's band, prob in [0.02, 0.98]; exported to Kaggle, scored out-of-fold:
+    model h0 scored train half 1, h1 half 0; test = mean of h0 and h1). Run A: LightGBM on [logit(oof_v81), ce2];
+    control run B: [logit(oof_v81)] (removes the gain of merely re-calibrating the band). 5-fold GroupKFold by S1.
+    Both scored on the FULL decision (p2 on band pairs, v8.1's oof elsewhere; threshold grid x one-owner on/off) over ALL
+    sampled S1 (tune_meta.parquet), the definition of cv_all.py. Only if A > B: fit A on all train band
+    pairs, write <out>/ (candidate_pairs.tsv copied from <src>/). Stops if a train score comes from its own half's model.
+    Any base version (defaults = v8.1 in work/), e.g. v9:
+      python pipeline/rerank.py stack --work work9 --band work9/ce2band --oof work9/oof_v9.parquet       --test-prob work9/test_prob_v9.parquet --meta work9/tune_meta.parquet --src output_v9 --out output_v9ce2
+
+    nice -n 19 python pipeline/rerank.py stack --work work --band work/ce2band
 """
+
 import argparse
 import json
 import shutil
 import sys
 from pathlib import Path
 
+import polars as pl
 import lightgbm as lgb
 import numpy as np
-import polars as pl
 from sklearn.model_selection import GroupKFold
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # src/
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "code/business_entity_resolution/src"))  # git repo
+from ce_data import ce_half  # noqa: E402
 from run import decide, write  # noqa: E402
+
 
 SECOND = dict(n_estimators=200, num_leaves=15, learning_rate=0.05, min_child_samples=100, verbose=-1)
 GRID = np.arange(0.2, 0.96, 0.02)
+
+
+# ── export-band (was band_export.py) ────────────────────────────────────────────
+def main_export_band():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--oof", type=Path, required=True, help="i, j, y, oof")
+    ap.add_argument("--test-prob", type=Path, required=True, help="i, j, prob")
+    ap.add_argument("--out", type=Path, required=True)
+    a = ap.parse_args()
+    band = lambda f, c: pl.read_parquet(f, columns=["i", "j", c]).filter(pl.col(c).is_between(0.02, 0.98)).select("i", "j")
+    tr, te = band(a.oof, "oof"), band(a.test_prob, "prob")
+    for h in (0, 1):
+        d = a.out / f"h{h}"
+        d.mkdir(parents=True, exist_ok=True)
+        tr.filter(ce_half(pl.col("i")) == 1 - h).write_parquet(d / "train_pairs.parquet")
+        te.write_parquet(d / "test_pairs.parquet")
+        print(f"h{h}: train {tr.filter(ce_half(pl.col('i')) == 1 - h).height}, test {te.height}")
 
 
 def logit(p):
@@ -48,7 +80,8 @@ def f05(o, meta, t, exclusive):
                       .otherwise(1.25 * P * R / (0.25 * P + R)).mean()).item()
 
 
-def main():
+# ── stack (was ce2_band.py) ─────────────────────────────────────────────────────
+def main_stack():
     ap = argparse.ArgumentParser()
     ap.add_argument("--work", type=Path, default=Path("work"))
     ap.add_argument("--band", type=Path, default=Path("work/ce2band"), help="h0/, h1/ with train_ce + test_ce.parquet")
@@ -183,5 +216,9 @@ def main():
           f"test probs -> {a.save_test_prob}", flush=True)
 
 
+SUBCOMMANDS = {"export-band": main_export_band, "stack": main_stack}
+
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) < 2 or sys.argv[1] not in SUBCOMMANDS:
+        sys.exit("usage: python rerank.py {" + " | ".join(SUBCOMMANDS) + "} [options]")
+    SUBCOMMANDS[sys.argv.pop(1)]()

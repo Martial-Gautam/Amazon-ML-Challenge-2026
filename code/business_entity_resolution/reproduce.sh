@@ -11,7 +11,6 @@ PY=${PY:-python3}
 S=code/business_entity_resolution/src
 P=$S/pipeline
 PARAMS=code/business_entity_resolution/best_params.json
-export PY
 
 step() {  # step OUTPUT command...  -> runs the command unless OUTPUT exists
   local out=$1; shift
@@ -52,20 +51,20 @@ stage_base() {  # normalised records + raw text + small cross-encoder (GPU)
   step work/gpu/ce_model $PY $S/ce.py --text work/text --pairs work/ce --out work/gpu
 }
 stage_neighbours() {  # GPU: two nearest-neighbour candidate sources
-  step work/retriever $PY $P/ret_train.py --work work --ce work/ce/ce_train.parquet --out work/retriever
+  step work/retriever $PY $P/candidates.py train-retriever --work work --ce work/ce/ce_train.parquet --out work/retriever
   for s in train test; do
-    step work/n4/${s}_knn.parquet  $PY $P/knn_search.py --work work --split $s --model intfloat/multilingual-e5-small --out work/n4
-    step work/ret/${s}_knn.parquet $PY $P/knn_search.py --work work --split $s --model work/retriever --out work/ret
+    step work/n4/${s}_knn.parquet  $PY $P/candidates.py search --work work --split $s --model intfloat/multilingual-e5-small --out work/n4
+    step work/ret/${s}_knn.parquet $PY $P/candidates.py search --work work --split $s --model work/retriever --out work/ret
   done
 }
 stage_v9() {  # build v9 (source of the French rows): candidates, features, classifier
   step work9/test_cand $PY $S/run.py pairs $FLAGS9
-  step work9/tfw_test.parquet    $PY $P/tfw_cols.py    --work work9 --tag $TAG9
-  step work9/rarity_test.parquet $PY $P/rarity_cols.py --work work9 --tag $TAG9
+  step work9/tfw_test.parquet    $PY $P/extra_features.py word-tfidf --work work9 --tag $TAG9
+  step work9/rarity_test.parquet $PY $P/extra_features.py rarity --work work9 --tag $TAG9
   step work9/train_features.parquet $PY $S/run.py train $FLAGS9 --features-only
   step work9/test_features         $PY $S/run.py predict $FLAGS9 --features-only
   gpu_features work9
-  step work9/test_prob_v9.parquet $PY $P/retrain_extra.py --work work9 --params $PARAMS \
+  step work9/test_prob_v9.parquet $PY $P/classifier.py --work work9 --params $PARAMS \
     --extra 'work9/gpu/{split}_emb.parquet' --extra 'work9/gpu/{split}_ce.parquet' \
     --extra 'work9/tfw_{split}.parquet' --extra 'work9/rarity_{split}.parquet' --out output_v9 --tag v9
 }
@@ -75,18 +74,18 @@ stage_rerank() {  # GPU: e5-base re-ranker (one model per S1 half) + stacking on
     step work/ce2_h$h/ce_model $PY $S/ce.py --text work/text --pairs work/ce2 --train-file ce_train_h$h.parquet \
       --out work/ce2_h$h --model intfloat/multilingual-e5-base --lr 3e-5 --epochs 1 --batch 64
   done
-  step work9/band/h1 $PY $P/band_export.py --oof work9/oof_v9.parquet --test-prob work9/test_prob_v9.parquet --out work9/band
+  step work9/band/h1 $PY $P/rerank.py export-band --oof work9/oof_v9.parquet --test-prob work9/test_prob_v9.parquet --out work9/band
   rerank_band work9
-  step work9/test_prob_v9ce2.parquet $PY $P/ce2_band.py --work work9 --band work9/ce2band --oof work9/oof_v9.parquet \
+  step work9/test_prob_v9ce2.parquet $PY $P/rerank.py stack --work work9 --band work9/ce2band --oof work9/oof_v9.parquet \
     --test-prob work9/test_prob_v9.parquet --meta work9/tune_meta.parquet --report work9/report_v9.json \
     --src output_v9 --out output_v9ce2
-  step work9/g_test_common.parquet $PY $P/france_rule.py --work work9 --pairs work9/test_prob_v9.parquet \
+  step work9/g_test_common.parquet $PY $P/france.py rules --work work9 --pairs work9/test_prob_v9.parquet \
     --out work9/g_test_common.parquet
-  step work9/g2_test_diffaddr_sym.parquet $PY $P/france_rule.py --work work9 --pairs work9/test_prob_v9.parquet \
+  step work9/g2_test_diffaddr_sym.parquet $PY $P/france.py rules --work work9 --pairs work9/test_prob_v9.parquet \
     --address different --out work9/g2_test_diffaddr_sym.parquet
 }
 stage_france() {  # GPU: two domain-adapted French cross-encoders (self-training on the unlabelled French test records)
-  step work9/frce/pairs/ce_train.parquet $PY $P/fr_synth.py --out work9/frce --score work9/test_prob_v9ce2.parquet
+  step work9/frce/pairs/ce_train.parquet $PY $P/france.py self-train-data --out work9/frce --score work9/test_prob_v9ce2.parquet
   step work9/frce_A/test_ce.parquet $PY $S/ce.py --text work9/frce/text --pairs work9/frce/pairs --out work9/frce_A \
     --model work/ce2_h0/ce_model --lr 2e-5 --epochs 1 --batch 64
   step work9/frce_B/test_ce.parquet $PY $S/ce.py --text work9/frce/text --pairs work9/frce/pairs --out work9/frce_B \
@@ -94,31 +93,31 @@ stage_france() {  # GPU: two domain-adapted French cross-encoders (self-training
 }
 stage_v10() {  # build v10 (source of the US/India rows): retriever candidates, features, 3-seed classifier, re-ranker
   step work10/test_cand $PY $S/run.py pairs $FLAGS10
-  step work10/rarity_test.parquet $PY $P/rarity_cols.py --work work10 --tag $TAG10
+  step work10/rarity_test.parquet $PY $P/extra_features.py rarity --work work10 --tag $TAG10
   step work10/train_features.parquet $PY $S/run.py train $FLAGS10 --features-only
   step work10/test_features         $PY $S/run.py predict $FLAGS10 --features-only
   gpu_features work10
-  step work10/test_prob_v10.parquet $PY $P/retrain_extra.py --work work10 --params $PARAMS \
+  step work10/test_prob_v10.parquet $PY $P/classifier.py --work work10 --params $PARAMS \
     --extra 'work10/gpu/{split}_emb.parquet' --extra 'work10/gpu/{split}_ce.parquet' --extra 'work10/rarity_{split}.parquet' \
     --seeds 3 --out output_v10 --tag v10
-  step work10/band/h1 $PY $P/band_export.py --oof work10/oof_v10.parquet --test-prob work10/test_prob_v10.parquet --out work10/band
+  step work10/band/h1 $PY $P/rerank.py export-band --oof work10/oof_v10.parquet --test-prob work10/test_prob_v10.parquet --out work10/band
   rerank_band work10
-  step work10/test_prob_v10ce2.parquet $PY $P/ce2_band.py --work work10 --band work10/ce2band --oof work10/oof_v10.parquet \
+  step work10/test_prob_v10ce2.parquet $PY $P/rerank.py stack --work work10 --band work10/ce2band --oof work10/oof_v10.parquet \
     --test-prob work10/test_prob_v10.parquet --meta work10/tune_meta.parquet --src output_v10 --out output_v10ce2
 }
 stage_final() {  # decisions per country, merge, French noise-variant recovery, validation -> output/
   # US/India rows: threshold 0.58 + ambiguity rejection (the French rows of this file are replaced below)
-  step output_final_usin env T=0.58 G1=work9/g_test_common.parquet G2=work9/g2_test_diffaddr_sym.parquet \
-    bash $P/final_assemble.sh work10 work10/test_prob_v10ce2.parquet output_v10ce2/ce2_band.json output_final_usin 0.10
+  step output_final_usin $PY $P/decide.py assemble work10 work10/test_prob_v10ce2.parquet output_v10ce2/ce2_band.json \
+    output_final_usin 0.10 --t 0.58 --g1 work9/g_test_common.parquet --g2 work9/g2_test_diffaddr_sym.parquet
   # French rows: v9 stacking fitted on S1 half 1 with French models A + B averaged; France threshold 0.72 + 0.19 = 0.91
-  step work9/test_prob_final_fr.parquet $PY $P/ce2_band.py --work work9 --band work9/ce2band --oof work9/oof_v9.parquet \
+  step work9/test_prob_final_fr.parquet $PY $P/rerank.py stack --work work9 --band work9/ce2band --oof work9/oof_v9.parquet \
     --test-prob work9/test_prob_v9.parquet --meta work9/tune_meta.parquet --src output_v9 --out output_v9_fr \
     --save-test-prob work9/test_prob_final_fr.parquet --half 1 --margin -1 \
     --frce ${FR_A:-work9/frce_A} ${FR_B:-work9/frce_B} --frce-min-cov 0.95
-  step output_final_fr bash $P/final_assemble.sh work9 work9/test_prob_final_fr.parquet output_v9_fr/ce2_band.json \
+  step output_final_fr $PY $P/decide.py assemble work9 work9/test_prob_final_fr.parquet output_v9_fr/ce2_band.json \
     output_final_fr 0.19
-  step output_merged $PY $P/country_merge.py --base output_final_usin --take output_final_fr --countries France --out output_merged
-  $PY $P/france_noise_accept.py --base output_merged --reverse-rules --out output
+  step output_merged $PY $P/decide.py merge --base output_final_usin --take output_final_fr --countries France --out output_merged
+  $PY $P/france.py recover --base output_merged --reverse-rules --out output
 }
 
 STAGES=("$@")

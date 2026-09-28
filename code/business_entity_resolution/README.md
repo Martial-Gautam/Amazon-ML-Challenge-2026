@@ -138,25 +138,15 @@ A **two-stage matcher** on a **high-recall candidate set**, followed by a **per-
         ├── ce.py                      ← GPU: fine-tunes or applies a cross-encoder (e5-small or e5-base)
         ├── tune.py                    ← Optuna search for LightGBM → best_params.json
         ├── run.py                     ← core driver: stages pairs, train, predict
-        └── pipeline/                  ← later stages, called by reproduce.sh
-            │   ── candidates ──
-            ├── ret_train.py           ← GPU: contrastive fine-tune of the dense retriever
-            ├── knn_search.py          ← GPU: nearest-neighbour candidates (plain e5 or the retriever)
-            │   ── features and classifier ──
-            ├── rarity_cols.py         ← name-rarity counts per pair
-            ├── tfw_cols.py            ← word TF-IDF cosines (v9 only)
-            ├── retrain_extra.py       ← LightGBM: 5-fold GroupKFold OOF, threshold search, multi-seed final fit
-            │   ── re-ranking and French adaptation ──
-            ├── band_export.py         ← exports the uncertainty-band pairs for the re-ranker
-            ├── ce2_band.py            ← stacked meta-classifier on [classifier logit, re-ranker logit]
-            ├── fr_synth.py            ← builds the French self-training set (pseudo-labels + synthetic negatives)
-            │   ── decision layer ──
-            ├── final_assemble.sh      ← thresholds + French rules + validator for one build
-            ├── country_threshold.py   ← one-to-one assignment, per-country thresholds, ambiguity rejection
-            ├── france_rule.py         ← lists French look-alike pairs (rules P1 / P2′)
-            ├── france_probe.py        ← applies a pair list to a submission (reject or accept), French rows only
-            ├── country_merge.py       ← merges two submissions by country
-            └── france_noise_accept.py ← French noise-variant recovery + high-confidence rule reversal (last step)
+        └── pipeline/                  ← later stages, one module per stage (python pipeline/<module>.py <subcommand>)
+            ├── candidates.py          ← GPU: train-retriever (dense retriever), search (nearest-neighbour candidates)
+            ├── extra_features.py      ← rarity (name-rarity counts), word-tfidf (word TF-IDF cosines, v9 only)
+            ├── classifier.py          ← LightGBM: 5-fold GroupKFold OOF, threshold search, multi-seed final fit
+            ├── rerank.py              ← export-band (uncertainty-band pairs), stack (meta-classifier on classifier + re-ranker)
+            ├── france.py              ← self-train-data (French self-training set), rules (look-alike lists P1 / P2′),
+            │                             apply (apply a pair list to French rows), recover (noise-variant recovery)
+            └── decide.py              ← thresholds (one-to-one, per-country thresholds, ambiguity rejection),
+                                          assemble (thresholds + French rules + validator for one build), merge (by country)
 ```
 
 Research code from the competition (simulations, probes, analyses) is not part of the package; only the scripts the
@@ -179,7 +169,7 @@ flowchart TD
     I --> K
     K --> L["US / India decisions<br/>one-to-one · t 0.58 · ambiguity rejection<br/>CV 0.98921"]
     K --> M["France decisions<br/>t 0.91 · look-alike rules · noise-variant recovery"]
-    L --> N["Merge by country + validate<br/>country_merge.py · validate_submission.py"]
+    L --> N["Merge by country + validate<br/>decide.py merge · validate_submission.py"]
     M --> N
     N --> O[("output/matching_results.tsv<br/>output/candidate_pairs.tsv")]
 ```
@@ -187,13 +177,13 @@ flowchart TD
 | # | Stage | Input → output | Scripts |
 |---|---|---|---|
 | 1 | Normalise | raw TSV → normalised parquet (`work*/{split}_s1`, `_cand`) | `prep.py`, `blocking.py` |
-| 2 | Candidates | normalised records → pair list (`*_pairs_*.parquet`) | `run.py pairs`, `ret_train.py`, `knn_search.py` |
-| 3 | Features | pairs → feature table | `features.py`, `rarity_cols.py`, `embed.py`, `ce.py` |
-| 4 | Classifier | features → probability per pair (OOF + test) | `retrain_extra.py` |
-| 5 | Re-rank + stack | band pairs → re-scored probability | `band_export.py`, `ce.py`, `ce2_band.py` |
-| 6 | French adaptation | French test records → adapted cross-encoders | `fr_synth.py`, `ce.py` |
-| 7 | Decisions | probabilities → matches per country | `final_assemble.sh`, `country_threshold.py`, `france_rule.py`, `france_probe.py` |
-| 8 | Merge + recover | two submissions → final file | `country_merge.py`, `france_noise_accept.py` |
+| 2 | Candidates | normalised records → pair list (`*_pairs_*.parquet`) | `run.py pairs`, `candidates.py` |
+| 3 | Features | pairs → feature table | `features.py`, `extra_features.py`, `embed.py`, `ce.py` |
+| 4 | Classifier | features → probability per pair (OOF + test) | `classifier.py` |
+| 5 | Re-rank + stack | band pairs → re-scored probability | `rerank.py`, `ce.py` |
+| 6 | French adaptation | French test records → adapted cross-encoders | `france.py self-train-data`, `ce.py` |
+| 7 | Decisions | probabilities → matches per country | `decide.py`, `france.py rules / apply` |
+| 8 | Merge + recover | two submissions → final file | `decide.py merge`, `france.py recover` |
 
 ## 6. Results
 
@@ -244,7 +234,7 @@ leaderboard (above CV) and **France 0.9673**. French recall (≈ 0.90) is the re
 - CV is 5-fold **GroupKFold by S1 record**: all candidates of one S1 stay in one fold.
 - The small cross-encoder is trained on 99,948 S1 records; `--exclude-s1` removes exactly those S1 from the classifier's training rows.
 - The re-ranker is trained 2-fold: each half's model scores only the other half's training pairs; test uses the mean of both.
-- `run.py` stops if any pair lacks a GPU score; `ce2_band.py` asserts full band coverage.
+- `run.py` stops if any pair lacks a GPU score; `rerank.py stack` asserts full band coverage.
 
 </details>
 
