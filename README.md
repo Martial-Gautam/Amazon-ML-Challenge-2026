@@ -86,23 +86,10 @@ python utils/validate_submission.py --matching output/matching_results.tsv \
 
 ## 3. Solution
 
-```mermaid
-flowchart TD
-    A[("Source 1 / 2 / 3 records")] --> B["Data preprocessing<br/>transliteration · abbreviations · legal forms · house numbers"]
-    B --> C["Candidate generation (blocking), per country<br/>key blocking + fuzzy re-rank · e5 nearest neighbours · dense retriever<br/>~25 candidates per S1 · recall 99.2%"]
-    C --> D["Feature engineering + LightGBM classifier<br/>~53 string, rarity and neural features · CV 0.98802"]
-    D --> F{"uncertain pair?<br/>0.02 ≤ p ≤ 0.98"}
-    F -- "no" --> K["Match probability"]
-    F -- "yes · US / India" --> G["Cross-encoder re-ranker<br/>fine-tuned multilingual-e5-base"]
-    F -- "yes · France" --> H["Domain adaptation<br/>2 cross-encoders self-trained on French test records"]
-    G --> I["Stacking<br/>LightGBM meta-model · CV 0.98876"]
-    H --> I
-    I --> K
-    K --> L["Post-processing · US / India<br/>one-to-one · threshold 0.58 · ambiguity rejection"]
-    K --> M["Post-processing · France<br/>one-to-one · threshold 0.91 · look-alike rules · noise recovery"]
-    L --> O[("matching_results.tsv")]
-    M --> O
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="code/business_entity_resolution/docs/pipeline-dark.svg">
+  <img alt="Pipeline: preprocessing, candidate generation, feature engineering and LightGBM, then cross-encoder re-ranking (US/India) or domain-adapted cross-encoders (France), stacking, post-processing and the merged output" src="code/business_entity_resolution/docs/pipeline-light.svg" width="100%">
+</picture>
 
 **Data preprocessing.** Records are cleaned and normalised: Indic scripts transliterated, abbreviations expanded, legal
 forms such as Ltd / LLC / SARL removed, house numbers extracted.

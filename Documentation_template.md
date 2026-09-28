@@ -46,6 +46,11 @@ test set adds France (15 % of the 1.7 million test businesses), with no French e
 saw, the same cross-encoder is adapted by self-training on the unlabelled French test records, with synthetic
 look-alikes that mimic how the data was generated.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="code/business_entity_resolution/docs/pipeline-dark.svg">
+  <img alt="Pipeline: preprocessing, candidate generation, feature engineering and LightGBM, then cross-encoder re-ranking (US/India) or domain-adapted cross-encoders (France), stacking, post-processing and the merged output" src="code/business_entity_resolution/docs/pipeline-light.svg" width="100%">
+</picture>
+
 The models doing the heavy lifting:
 
 | Model | Size | What it does |
