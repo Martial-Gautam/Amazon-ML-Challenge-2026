@@ -75,10 +75,8 @@ resumes where it stopped, and `bash code/business_entity_resolution/reproduce.sh
 Compute used: a 32-core, 54 GB Linux machine (blocking peaks at ~36 GB) and one 16 GB GPU at a time (Kaggle T4/P100).
 Use `PY=/path/to/python` to choose the interpreter.
 
-> **Exactness.** Given the intermediate files of our run, the `final` stage rebuilds the uploaded file exactly
-> (identical match and candidate sets on every row; checked). A full rebuild from scratch can differ on a few French
-> rows: our run also used French pairs from an earlier v8.1 build to select what the French models score (95.7 % vs
-> 95.2 % coverage), and GPU scores can differ in the last decimals across GPU types. Keep `transformers==4.57.6`.
+> **Note.** GPU scores can differ slightly across GPU types, so a full rebuild may change a few borderline French
+> pairs. Keep `transformers==4.57.6`: later versions change cross-encoder scores.
 
 ## 2. The problem
 

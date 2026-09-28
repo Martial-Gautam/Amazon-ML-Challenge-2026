@@ -71,7 +71,7 @@ near house numbers); its score replaces ce2 for French pairs (LB +0.0017). Two l
 | + P1 reversal | + P1-removed same-house copies the models score >= 0.91 ("France", initials) | ~99.2% | 0.98921 | 0.986673 |
 | **final** | + all remaining P1/P2'-removed winners the models score >= 0.91 | ~99.2% | **0.98921** | **0.986691** |
 
-Final assembly: 5,811,466 matches (US/India threshold 0.58 + conflict rule; France threshold 0.91 + rules P1/P2'). A diagnostic upload with the French rows emptied measured US/India at 0.9897 on the LB (above CV) and France at 0.9673: France recall is the remaining gap.
+Final assembly: 5,817,951 matches (US/India threshold 0.58 + conflict rule; France threshold 0.91 + rules P1/P2', then French noise-variant recovery). A diagnostic upload with the French rows emptied measured US/India at 0.9897 on the LB (above CV) and France at 0.9673: France recall is the remaining gap.
 Also tried and not kept (measured on CV or LB): learned re-ranker, context stacking, anchor features, CatBoost blends,
 more trees, re-tuning, importance weighting, word TF-IDF (France −0.0017 on the LB), an e5-large second-stage model,
 a learned unseen-country corrector, pseudo-labelling of the matcher.
