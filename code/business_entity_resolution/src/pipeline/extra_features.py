@@ -1,25 +1,17 @@
-"""Extra label-free pair features added to the classifier's feature table.
+"""Extra label-free pair features joined to the classifier's feature table.
 
 Subcommands (python pipeline/extra_features.py <subcommand> --help):
 
-  rarity  (was rarity_cols.py)
-    Name-rarity features (laptop's idea 1b, A/B +0.0038) for a split's final pairs -> <work>/rarity_{split}.parquet,
-    used by run.py --extra. Label-free counts over ALL records of that split (so test/France counts come from test):
-      name_df_s1          #S1 with the same (ctry, core)                      (on i)
-      name_df_cand        #candidates (S2+S3, any address) with the same (ctry, core)  (on j)
-      cand_addr_empty     candidate address empty after strip                 (on j)
-      name_df_s1_x_empty  name_df_s1 * cand_addr_empty
-      name_df_s1_eq1, name_df_cand_le1: scale-free flags (raw counts shift with split size)
-    Empty core -> counts null.
+  rarity
+    Name-rarity features per pair: how many Source 1 records and how many candidates in the same country share the exact
+    core name, the candidate's empty-address flag, and their interactions. Counts come from each split's own records.
+        python pipeline/extra_features.py rarity --work work10 --tag <pairs tag>
+    -> <work>/rarity_{split}.parquet
 
-    python pipeline/extra_features.py rarity --work work9 --tag k30_p1500_ap_ak_use20_rs_knn5_re
-
-  word-tfidf  (was tfw_cols.py)
-    Word-level TF-IDF cosines (tfw_core, tfw_addr) for v8's train and test pairs -> work/tfw_{train,test}.parquet.
-    Vectorisers are fitted on train + test text together (label-free), so French words (test only) get real IDF weights;
-    a train-only fit would treat every French word as unknown. Same settings as experiments/tfidf_ab.py (A/B: +0.0012).
-
-    python pipeline/extra_features.py word-tfidf --work work --tag k30_p1500_ap_ak_use20
+  word-tfidf
+    Word-level TF-IDF cosines of names and addresses, fitted on training and test text (used by the v9 build only).
+        python pipeline/extra_features.py word-tfidf --work work9 --tag <pairs tag>
+    -> <work>/tfw_{split}.parquet
 """
 
 import argparse
@@ -45,7 +37,7 @@ def rarity(work: Path, split: str, pairs: Path) -> pl.DataFrame:
             .collect())
 
 
-# ── rarity (was rarity_cols.py) ─────────────────────────────────────────────────
+# ── rarity ───────────────────────────────────────────────────────────────────
 def main_rarity():
     ap = argparse.ArgumentParser()
     ap.add_argument("--work", type=Path, default=Path("work9"))
@@ -66,7 +58,7 @@ def records(work, split, which):
             .collect().sort("idx").with_columns(pl.col("core", "addr").fill_null("")))
 
 
-# ── word-tfidf (was tfw_cols.py) ────────────────────────────────────────────────
+# ── word-tfidf ─────────────────────────────────────────────────────────────────
 def main_word_tfidf():
     ap = argparse.ArgumentParser()
     ap.add_argument("--work", type=Path, default=Path("work"))

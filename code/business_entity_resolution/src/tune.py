@@ -1,4 +1,4 @@
-"""Optuna search over LightGBM hyper-parameters on a saved feature table (runs on Kaggle, EC2 or laptop).
+"""Optuna search over LightGBM hyper-parameters on a saved feature table.
 
 Inputs come from `run.py train --save-features`:
   train_features.parquet  features + i, j, y (one row per candidate pair)

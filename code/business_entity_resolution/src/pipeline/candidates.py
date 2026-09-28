@@ -1,25 +1,18 @@
-"""Candidate sources on the GPU: the dense retriever and nearest-neighbour search.
+"""Candidate sources that run on the GPU.
 
 Subcommands (python pipeline/candidates.py <subcommand> --help):
 
-  train-retriever  (was ret_train.py)
-    Dense retriever (GPU): contrastive fine-tune of multilingual-e5-small (MIT) as a bi-encoder, trained ONLY on the
-    99,948 S1 records the small cross-encoder uses (ce_data.py), which the classifier never trains on, so its kNN candidates
-    never leak labels. Training pairs are built here: positives = all ground-truth matches of those S1, hard negatives =
-    their blocking candidates that are not matches (ce_train.parquet rows with y = 0).
+  train-retriever
+    Fine-tunes multilingual-e5-small as a dense retriever (bi-encoder) with a contrastive InfoNCE loss: for each Source 1
+    query one true copy and one hard negative from its blocking candidates, temperature 0.05, 4 epochs, lr 3e-5.
+    Trained only on the 99,948 Source 1 records used for the small cross-encoder, which the classifier never trains on,
+    so its candidates carry no label leakage.
+        python pipeline/candidates.py train-retriever --work work --ce work/ce/ce_train.parquet --out work/retriever
 
-    Each step: B distinct S1 queries, for each one random true copy (positive) and one random hard negative. InfoNCE over the
-    batch's 2B candidates (temperature 0.05); batch columns that are true matches of another row's S1 are masked out.
-
-    python ret_train.py --work work --ce work/ce/ce_train.parquet --out work/retriever        (then knn_search.py --model work/retriever)
-
-  search  (was knn_search.py)
-    Nearest-neighbour candidate source (GPU): for every S1 record, the top-k S2/S3 records of the same country by cosine
-    of e5 "name | address" embeddings. Used twice: with the off-the-shelf multilingual-e5-small (-> work/n4) and with the
-    fine-tuned retriever from ret_train.py (-> work/ret). Raw text only, label-free.
-
-    python knn_search.py --work work --split train --model intfloat/multilingual-e5-small --out work/n4
-    python knn_search.py --work work --split test  --model work/retriever                 --out work/ret
+  search
+    Top-k Source 2/3 records per Source 1 record within the same country, by cosine similarity of "name | address"
+    embeddings (off-the-shelf multilingual-e5-small or the fine-tuned retriever). Exact search on the GPU.
+        python pipeline/candidates.py search --work work --split test --model work/retriever --out work/ret
     -> <out>/{split}_knn.parquet: i, j, knn_rank (0-based), knn_cos
 """
 
@@ -41,7 +34,7 @@ from run import truth_pairs  # noqa: E402
 MODEL, MAX_LEN, EPOCHS, LR, TAU = "intfloat/multilingual-e5-small", 64, 4, 3e-5, 0.05
 
 
-# ── train-retriever (was ret_train.py) ──────────────────────────────────────────
+# ── train-retriever ───────────────────────────────────────────────────────────
 def main_train_retriever():
     ap = argparse.ArgumentParser()
     ap.add_argument("--work", type=Path, default=Path("work"))
@@ -132,7 +125,7 @@ def embed(texts, tok, model, batch=2048):
     return out
 
 
-# ── search (was knn_search.py) ──────────────────────────────────────────────────
+# ── search ──────────────────────────────────────────────────────────────────
 def main_search():
     ap = argparse.ArgumentParser()
     ap.add_argument("--work", type=Path, default=Path("work"), help="normalised records: <work>/{split}_s1, _cand parquet")

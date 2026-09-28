@@ -2,7 +2,7 @@
 
 Mode 1 (e5-small `ce`): pairs of 100k S1 OUTSIDE the matcher's training sample, so its scores are never optimistic.
     python ce_data.py --n-train 600000 --out work/ce              # -> ce_train.parquet (i, j, y)
-Mode 2 (out-of-fold `ce2`): all training S1 are split into two halves by ce_half(i); the model for half h trains on
+Mode 2 (out-of-fold re-ranker): all training S1 are split into two halves by ce_half(i); the model for half h trains on
 a sample of half h and scores only the other half (and test), so every training S1 gets an out-of-fold score.
     python ce_data.py --half 0 --n-ce 200000 --k-use 20 --out work/ce2   # -> ce_train_h0.parquet
 """

@@ -1,26 +1,19 @@
-"""Decision layer: per-country thresholds, the full assembly of one build, and the country merge.
+"""Decision layer: one-to-one assignment, per-country thresholds, the assembly of one build, and the country merge.
 
 Subcommands (python pipeline/decide.py <subcommand> --help):
 
-  thresholds  (was country_threshold.py)
-    Write a submission from saved test probabilities with a separate threshold for one country (label-free choice, e.g.
-    France stricter per the v8 LB threshold probes: 0.68 0.973633 < 0.72 0.973867 < 0.76 0.973972). One-owner rule as run.py.
+  thresholds
+    Each Source 2/3 record goes to its most probable Source 1 record; pairs above the threshold are accepted (one country
+    may use threshold + offset), with optional ambiguity rejection (drop a match when the runner-up scores >= 0.5 within
+    delta). Writes matching_results.tsv and candidate_pairs.tsv (exactly the scored pairs).
 
-    python pipeline/decide.py thresholds --work work9 --prob work9/test_prob_v9ce2.parquet --json output_v9ce2/ce2_band.json     --country France --offset 0.04 --out output_v9ce2_fr
-    Threshold and one-owner rule come from the stage's json (CV choice); the country gets threshold + offset (v8 LB probes:
-    +0.04 above the CV optimum was better, +0.000105). candidate_pairs.tsv = exactly the pairs in --prob (the scored set).
-
-  assemble  (was final_assemble.sh)
+  assemble
     thresholds + French look-alike rules + validator for one build:
-    python pipeline/decide.py assemble WORK PROB JSON OUT [FR_OFFSET] [--t 0.58] [--g1 LIST --g2 LIST]
+        python pipeline/decide.py assemble WORK PROB JSON OUT [FR_OFFSET] [--t 0.58] [--g1 LIST --g2 LIST]
 
-  merge  (was country_merge.py)
-    Merge two validated submissions by country: rows (matching_results.tsv AND candidate_pairs.tsv) of the S1 records of
-    --countries come from --take, all other rows from --base. Each S1 row keeps the candidates its own model scored.
-    LB 27 Sep: v11+L1 (v10 base) 0.98533 -> with A's (v9 base) French rows 0.985926: v9 is better on France (+0.004),
-    v10 on US/India.
-
-    python pipeline/decide.py merge --base output_final_v11L1 --take output_final_v9_control --countries France     --out output_probe_hyb_A_fr
+  merge
+    Merges two submissions by country: rows of --countries from --take, all others from --base.
+        python pipeline/decide.py merge --base <dir> --take <dir> --countries France --out <dir>
 """
 
 import argparse
@@ -36,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "code/business_enti
 from run import write  # noqa: E402
 
 
-# ── thresholds (was country_threshold.py) ───────────────────────────────────────
+# ── thresholds ────────────────────────────────────────────────────────────────
 def main_thresholds():
     ap = argparse.ArgumentParser()
     ap.add_argument("--work", type=Path, required=True)
@@ -82,7 +75,7 @@ def main_thresholds():
           f"candidates = {allp.height} scored pairs", flush=True)
 
 
-# ── merge (was country_merge.py) ────────────────────────────────────────────────
+# ── merge ────────────────────────────────────────────────────────────────────
 def main_merge():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", type=Path, required=True)
@@ -111,10 +104,10 @@ def main_merge():
                     "-c", str(a.out / "candidate_pairs.tsv"), "-t", str(a.test_dir), "--check-ids"], check=True)
 
 
-# ── assemble (was final_assemble.sh) ───────────────────────────────────────────
+# ── assemble ───────────────────────────────────────────────────────────────
 def main_assemble():
     """Decision layer for one build, then validation: per-country thresholds with ambiguity rejection for US/India,
-    French look-alike rules P1 / P2' (lists built into WORK when missing), validator. Run from the package root."""
+    French look-alike rules (lists built into WORK when missing), validator. Run from the package root."""
     ap = argparse.ArgumentParser()
     ap.add_argument("work", help="work folder of the build (test_s1 / test_cand parquet)")
     ap.add_argument("prob", help="i, j, prob for every scored test pair (rerank.py stack --save-test-prob)")
@@ -122,8 +115,8 @@ def main_assemble():
     ap.add_argument("out")
     ap.add_argument("fr_offset", nargs="?", default="0", help="France threshold = US/India threshold + offset")
     ap.add_argument("--t", help="US/India threshold (overrides the json)")
-    ap.add_argument("--g1", help="P1 pair list (default <work>/g_test_common.parquet)")
-    ap.add_argument("--g2", help="P2' pair list (default <work>/g2_test_diffaddr_sym.parquet)")
+    ap.add_argument("--g1", help="same-address look-alike pair list (default <work>/g_test_common.parquet)")
+    ap.add_argument("--g2", help="different-address look-alike pair list (default <work>/g2_test_diffaddr_sym.parquet)")
     a = ap.parse_args()
     france = str(Path(__file__).resolve().with_name("france.py"))
     g1 = a.g1 or f"{a.work}/g_test_common.parquet"

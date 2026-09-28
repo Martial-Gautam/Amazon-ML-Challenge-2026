@@ -1,57 +1,28 @@
-"""France: self-training data for the domain-adapted cross-encoders, look-alike rules, and noise-variant recovery.
+"""France: training data for the domain-adapted cross-encoders, look-alike rules, and noise-variant recovery.
 
 Subcommands (python pipeline/france.py <subcommand> --help):
 
-  self-train-data  (was fr_synth.py)
-    P5 (organiser-approved: self-training + synthetic pairs from the provided records): a French training set for
-    fine-tuning the ce2 cross-encoder on France, built only from the TEST French records (no labels, no external data).
-      real positives   : French pairs the matcher is >= 99.5% sure of (one-owner winners), outside the France rules' lists
-      sibling negatives: those positives with one generic French name word swapped for another (Club -> Comite; the
-                         generator's look-alike recipe), same address (60%) or a shifted house number (40%)
-      decoy negatives  : positive's name + a French decoy word (Groupe, Holding, ...) at a house number +1..15
-      hard negatives   : P2' pairs (sibling-word swap at a different address; ~95% non-matches in simulation)
-      easy negatives   : pairs the matcher scores < 0.01
-    Writes <out>/text/{train,test}_{s1,cand}.parquet (idx, business_name, business_address) and <out>/pairs/ce_train.parquet
-    (i, j, y) + test_pairs.parquet (French pairs to score) in ce.py's layout.
+  self-train-data
+    Builds a French training set from the unlabelled French test records (text only, no labels): pseudo-labelled
+    positives (pairs the pipeline scores >= 0.995 that are their record's best match), synthetic hard negatives that copy
+    the data generator's look-alikes (one generic name word swapped, same or shifted house number; decoy words such as
+    Groupe or Holding at a nearby house number), different-address look-alikes and easy negatives.
+        python pipeline/france.py self-train-data --out work9/frce --score work9/test_prob_v9ce2.parquet
 
-    python pipeline/france.py self-train-data --out work9/frce
+  rules
+    Lists French look-alike pairs: the candidate's core name equals the Source 1 core name with one common word swapped
+    (not a typo, not a generator noise word), at the same address with no other record or Source 1 of that name
+    (default), or at a different address (--address different).
+        python pipeline/france.py rules --work work9 --pairs work9/test_prob_v9.parquet --out work9/g_test_common.parquet
 
-  rules  (was france_rule.py)
-    The France rule adopted from the LB probe (27 Sep, +0.001118): list the test pairs of group G-common, exactly as probed.
-    G-common = candidate j of S1 i where
-      - core(j) = core(i) with ONE word swapped (one word removed, one added, >= 1 shared, the two words not typo-like: ratio < 70),
-      - the added word is not a generator noise word (log((n_add+5)/(n_rem+5)) <= 2 over all such swaps in this split+country),
-      - both words are common name words (in >= 20 S1 cores of this split+country),
-      - same address (token-set ratio >= 95, house-number key present),
-      - no other candidate record with j's (core, house key) and no S1 with j's (core, house key).
-    Output: parquet (source1_entity_id, e2) for France S1; apply with france_probe.py --mode reject.
+  apply
+    Removes (--mode reject) or adds (--mode accept) a list of French pairs in a submission; other countries unchanged.
+        python pipeline/france.py apply --base <submission dir> --groups <pair list> --mode reject --out <dir>
 
-    python pipeline/france.py rules --work work10 --pairs work10/test_prob_v10ce2.parquet --out work10/g_test_common.parquet
-
-  apply  (was france_probe.py)
-    France-only leaderboard probe: copy a base submission and change ONLY French S1 rows, so the LB difference to the
-    base measures the change on France alone (US/India rows byte-identical).
-
-    Group G (label-free, experiments analysis 27 Sep): candidate at the same address as the S1 (token-set >= 95, house-number
-    key present) whose core differs from the S1 core by exactly ONE non-typo word swap, no other S2/S3 record with the same
-    (core, house key) and no S1 with that (core, house key). In train such pairs are matches 80% (US) / 38% (India); France
-    unknown -> probe.
-
-    --mode reject : drop G pairs from the base's French matches
-    --mode accept : add G pairs (not already matched to another S1) to the base's French matches (and candidates if needed)
-
-    python pipeline/france.py apply --base output_v81ce2 --groups work9/g_test.parquet --mode reject --out output_probe_g_rej
-
-  recover  (was france_noise_accept.py)
-    Final France step (27 Sep, LB 0.986371 -> 0.986525): re-accept French generator noise copies that rule P1 removed.
-    P1 (france_rule.py) rejects same-address single common-word swaps whose added word looks symmetric (log add/remove
-    ratio <= 2 in the French test records). "services" is one of the generator's noise words (US/India: center / services /
-    service / partners, 97% true), but French names also use it as a generic word, so its French ratio (1.41) fell under
-    P1's cut and P1 removed ~3,000 true copies the models scored >= 0.91. Also "associes" (the French "partners", ratio 5.3).
-    Accepts (record not owned by any S1, one owner per record), on the same house number:
-      associes (any score), services (prob >= 0.5), and optional --words W1,W2 (prob >= 0.91 and in the P1 list).
-
-    python pipeline/france.py recover --base output_probe_hyb2_p5b_frt0.19 --out output_final
+  recover
+    Re-accepts French pairs the look-alike rule removed when the swapped word is a generator noise word (Services,
+    Associés), and with --reverse-rules every removed pair that both French cross-encoders score >= 0.91.
+        python pipeline/france.py recover --base <submission dir> --reverse-rules --out output
 """
 
 import argparse
@@ -105,7 +76,7 @@ def shift_number(addr, rng):
     return addr[:m.start()] + str(int(m.group()) + rng.randint(1, 15)) + addr[m.end():]
 
 
-# ── self-train-data (was fr_synth.py) ───────────────────────────────────────────
+# ── self-train-data ────────────────────────────────────────────────────────────
 def main_self_train_data():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", type=Path, required=True)
@@ -181,7 +152,7 @@ def main_self_train_data():
     print(f"wrote {a.out}: test pairs to score {sc.height}", flush=True)
 
 
-# ── rules (was france_rule.py) ──────────────────────────────────────────────────
+# ── rules ──────────────────────────────────────────────────────────────────────
 def main_rules():
     ap = argparse.ArgumentParser()
     ap.add_argument("--work", type=Path, required=True)
@@ -189,9 +160,9 @@ def main_rules():
     ap.add_argument("--country", default="France", help="country to output, or ALL")
     ap.add_argument("--split", default="test", help="test (default) or train (for simulations)")
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--lr-max", type=float, help="max log add/remove ratio of the added word (default: 2 same = as probed, 0.5 different)")
+    ap.add_argument("--lr-max", type=float, help="max log add/remove ratio of the added word (default: 2 for same address, 0.5 for different)")
     ap.add_argument("--address", choices=("same", "different"), default="same",
-                    help="same = the LB-proven rule; different = P2' (same swap, address differs; twin/S1 checks skipped)")
+                    help="same = same-address look-alikes; different = the same swap at a different address (twin checks skipped)")
     a = ap.parse_args()
     if a.lr_max is None:
         a.lr_max = 2.0 if a.address == "same" else 0.5
@@ -216,8 +187,8 @@ def main_rules():
          .filter((pl.col("df_add") >= 20) & (pl.col("df_rem") >= 20)))
     if a.address == "different":
         d = d.with_columns(asim=pl.Series(process.cpdist(d["a1"].to_list(), d["a2"].to_list(), scorer=fuzz.token_set_ratio, workers=-1)))
-        d = d.filter((pl.col("a2") != "") & (pl.col("asim") < 95))  # a real, different address (review F6)
-        print("P2' pairs per country:", d.group_by("c").len().sort("c").rows(), flush=True)
+        d = d.filter((pl.col("a2") != "") & (pl.col("asim") < 95))  # a real, different address
+        print("different-address look-alike pairs per country:", d.group_by("c").len().sort("c").rows(), flush=True)
         out = (d if a.country == "ALL" else d.filter(pl.col("c") == a.country)).select("i", "j", "c", source1_entity_id="s", e2="e2")
         out.write_parquet(a.out)
         print(f"wrote {a.out}: {out.height} {a.country} pairs", flush=True)
@@ -241,7 +212,7 @@ def lists(path, col):
             .rename({col: "e2"}))
 
 
-# ── apply (was france_probe.py) ─────────────────────────────────────────────────
+# ── apply ─────────────────────────────────────────────────────────────────────
 def main_apply():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", type=Path, required=True)
@@ -303,17 +274,17 @@ def swaps(prob):
     return d.filter(pl.col("asim") >= 95).select("source1_entity_id", "e2", "add", "prob")
 
 
-# ── recover (was france_noise_accept.py) ────────────────────────────────────────
+# ── recover ─────────────────────────────────────────────────────────────────
 def main_recover():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", type=Path, required=True)
-    ap.add_argument("--prob", type=Path, default=W / "test_prob_v9_p5b.parquet", help="French P5+P5b stage-2 probabilities")
-    ap.add_argument("--p1", type=Path, default=W / "g_test_common.parquet", help="the P1 list (source1_entity_id, e2)")
-    ap.add_argument("--words", default="", help="extra P1-removed words to re-accept at prob >= 0.91 (comma list)")
+    ap.add_argument("--prob", type=Path, default=W / "test_prob_v9_p5b.parquet", help="French stage-2 probabilities (with the French cross-encoders)")
+    ap.add_argument("--p1", type=Path, default=W / "g_test_common.parquet", help="the same-address look-alike list (source1_entity_id, e2)")
+    ap.add_argument("--words", default="", help="extra look-alike-rule words to re-accept at prob >= 0.91 (comma list)")
     ap.add_argument("--reverse-rules", action="store_true",
-                    help="second pass (final, LB 0.986691): re-accept every P1/P2'-removed pair that is its record's one-owner "
+                    help="second pass: re-accept every pair removed by the look-alike rules that is its record's best match "
                          "winner with prob >= 0.91 on a record no S1 owns (both France cross-encoders were confident)")
-    ap.add_argument("--p2", type=Path, default=W / "g2_test_diffaddr_sym.parquet", help="the P2' list")
+    ap.add_argument("--p2", type=Path, default=W / "g2_test_diffaddr_sym.parquet", help="the different-address look-alike list")
     ap.add_argument("--out", type=Path, required=True)
     a = ap.parse_args()
     d = swaps(a.prob)

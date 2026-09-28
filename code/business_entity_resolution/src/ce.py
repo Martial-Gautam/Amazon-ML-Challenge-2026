@@ -1,5 +1,5 @@
 """Cross-encoder pair scorer (GPU): fine-tunes intfloat/multilingual-e5-small (MIT, 118M params; `ce`) or
-multilingual-e5-base (MIT, 278M; `ce2`, out-of-fold halves from ce_data.py --half) to read both
+multilingual-e5-base (MIT, 278M; the re-ranker, two out-of-fold models from ce_data.py --half) to read both
 records of a candidate pair together ("name | address" [SEP] "name | address") and predict match / no match.
 
 Trained ONLY on training-set pairs of S1 records outside the matcher's CV sample (ce_train.parquet: i, j, y),
@@ -35,7 +35,7 @@ def main():
     ap.add_argument("--pairs", type=Path, required=True)
     ap.add_argument("--out", type=Path, default=Path("."))
     ap.add_argument("--epochs", type=int, default=1)
-    ap.add_argument("--model", default=MODEL, help="base model (MIT): multilingual-e5-small, or -base for ce2")
+    ap.add_argument("--model", default=MODEL, help="base model (MIT): multilingual-e5-small, or -base for the re-ranker")
     ap.add_argument("--lr", type=float, default=5e-5)
     ap.add_argument("--batch", type=int, default=256, help="training pairs per GPU (64 fits e5-base on a 16 GB T4)")
     ap.add_argument("--train-file", default="ce_train.parquet", help="training pairs (i, j, y) inside --pairs")

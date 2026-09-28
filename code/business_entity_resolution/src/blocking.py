@@ -3,7 +3,7 @@
 Keys per record come from prep.block_keys (name skeleton combos + house numbers), all scoped by
 country label, so unseen countries like France work unchanged.
 Pairs sharing keys are scored by sum of idf(key) and the top-K candidates per S1 record are kept.
-Everything streams from parquet so peak memory stays low (laptop has ~4 GB free).
+Everything streams from parquet so peak memory stays low.
 """
 from pathlib import Path
 
@@ -60,7 +60,7 @@ def _keys(base: pl.DataFrame, id_col: str, addr_keys=False, raw=False) -> pl.Dat
         parts.append(w.select(id_col, "ctry", k=pl.lit("a:") + pl.min_horizontal("w", "w2") + " "
                               + pl.max_horizontal("w", "w2")))
     k = pl.concat(parts).filter(pl.col("k").str.len_chars() >= 3)
-    if raw:  # unhashed key strings (experiments/key_audit.py)
+    if raw:  # unhashed key strings, for key analysis
         return k.select(id_col, "k").unique()
     return k.select(id_col, h=pl.concat_str("ctry", "k", separator="\x00").hash()).unique()
 
@@ -75,7 +75,7 @@ def keys(path: str, id_col: str, ctry: str, batch=1_000_000, addr_keys=False) ->
 
 def _rescore(q: pl.DataFrame, s1c: pl.DataFrame, cc: pl.DataFrame, addr_partial=False) -> pl.Series:
     """Cheap fuzzy re-rank score for pooled candidates: name skeleton + address token-set similarity
-    (+ address partial ratio: experiments/resort.py, top-20 recall 93.1% -> 94.1% at pool 1500)."""
+    (+ address partial ratio: top-20 recall 93.1% -> 94.1% at pool 1500)."""
     a = q.select("i").join(s1c, left_on="i", right_on="idx", how="left", maintain_order="left")
     b = q.select("j").join(cc, left_on="j", right_on="idx", how="left", maintain_order="left")
     name = process.cpdist(a["sk"].to_list(), b["sk"].to_list(), scorer=fuzz.token_set_ratio, workers=-1)

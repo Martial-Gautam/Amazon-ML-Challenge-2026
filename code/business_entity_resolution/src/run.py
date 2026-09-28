@@ -92,7 +92,7 @@ def pairs(a, split):
 
 def rare_empty_pairs(s1p, cp, max_df_cand=10):
     """(i, j): same country, same non-empty core name, the core is unique among that country's S1 and appears on at
-    most `max_df_cand` candidates, and the candidate has no address (laptop's idea 1a test)."""
+    most `max_df_cand` candidates, and the candidate has no address."""
     s1 = pl.scan_parquet(s1p).select("idx", "ctry", "core").filter(pl.col("core") != "")
     cand = pl.scan_parquet(cp).select("idx", "ctry", "core", "business_address").filter(pl.col("core") != "")
     s1 = s1.filter(pl.len().over("ctry", "core") == 1)
@@ -230,7 +230,7 @@ def train(a):
          .write_parquet(a.work / "train_features.parquet"))
         (ids.to_frame().join(truth.group_by("i").len("ntrue"), on="i", how="left").fill_null(0)
          .write_parquet(a.work / "tune_meta.parquet"))
-    if a.features_only:  # CPU part only: GPU scores and other columns are joined later, in parallel with Kaggle
+    if a.features_only:  # CPU part only: GPU scores and other columns are joined later
         print(f"[train] features only: wrote {a.work / 'train_features.parquet'}", flush=True)
         return
 

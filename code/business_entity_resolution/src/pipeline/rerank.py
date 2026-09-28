@@ -1,28 +1,20 @@
-"""Cross-encoder re-ranking of the uncertainty band and the stacked meta-classifier.
+"""Cross-encoder re-ranking of uncertain pairs and the stacked meta-classifier.
 
 Subcommands (python pipeline/rerank.py <subcommand> --help):
 
-  export-band  (was band_export.py)
-    Export a matcher's uncertain band for the ce2 (e5-base, out-of-fold halves) score-only kernels.
-    Band = pairs with probability in [0.02, 0.98]: train from the OOF predictions, test from the test predictions.
-    Model h0 (trained on half-0 S1) scores train rows of half 1, h1 scores half 0; both score the whole test band.
-    -> <out>/h0/{train,test}_pairs.parquet, <out>/h1/{train,test}_pairs.parquet (i, j), one Kaggle dataset per half.
+  export-band
+    Writes the pairs in the uncertainty band (classifier probability 0.02-0.98) for the multilingual-e5-base
+    cross-encoder: for each of the two cross-encoder models, the training pairs of the other half of the Source 1 records
+    (so every training pair gets an out-of-fold score), and all test band pairs.
+        python pipeline/rerank.py export-band --oof work9/oof_v9.parquet --test-prob work9/test_prob_v9.parquet --out work9/band
 
-    python pipeline/rerank.py export-band --oof work9/oof_v9.parquet --test-prob work9/test_prob_v9.parquet --out work9/band
-
-  stack  (was ce2_band.py)
-    ce2 second stage on v8.1's uncertain band (ce2_handoff.md, steps 1-7).
-
-    Band = the pairs that have a ce2 score (v8's band, prob in [0.02, 0.98]; exported to Kaggle, scored out-of-fold:
-    model h0 scored train half 1, h1 half 0; test = mean of h0 and h1). Run A: LightGBM on [logit(oof_v81), ce2];
-    control run B: [logit(oof_v81)] (removes the gain of merely re-calibrating the band). 5-fold GroupKFold by S1.
-    Both scored on the FULL decision (p2 on band pairs, v8.1's oof elsewhere; threshold grid x one-owner on/off) over ALL
-    sampled S1 (tune_meta.parquet), the definition of cv_all.py. Only if A > B: fit A on all train band
-    pairs, write <out>/ (candidate_pairs.tsv copied from <src>/). Stops if a train score comes from its own half's model.
-    Any base version (defaults = v8.1 in work/), e.g. v9:
-      python pipeline/rerank.py stack --work work9 --band work9/ce2band --oof work9/oof_v9.parquet       --test-prob work9/test_prob_v9.parquet --meta work9/tune_meta.parquet --src output_v9 --out output_v9ce2
-
-    nice -n 19 python pipeline/rerank.py stack --work work --band work/ce2band
+  stack
+    Stacked LightGBM meta-model on [logit(classifier probability), cross-encoder logit] over the band pairs, 5-fold CV by
+    Source 1 record, compared with a control model that sees only the classifier probability. Writes the re-scored test
+    probabilities and the chosen threshold. With --frce, French pairs use the French cross-encoders' scores in place of
+    the re-ranker score (averaged over the given folders); --half fits and scores on one half of the Source 1 records.
+        python pipeline/rerank.py stack --work work10 --band work10/ce2band --oof work10/oof_v10.parquet \
+            --test-prob work10/test_prob_v10.parquet --meta work10/tune_meta.parquet --src output_v10 --out output_v10ce2
 """
 
 import argparse
@@ -46,7 +38,7 @@ SECOND = dict(n_estimators=200, num_leaves=15, learning_rate=0.05, min_child_sam
 GRID = np.arange(0.2, 0.96, 0.02)
 
 
-# ── export-band (was band_export.py) ────────────────────────────────────────────
+# ── export-band ─────────────────────────────────────────────────────────────
 def main_export_band():
     ap = argparse.ArgumentParser()
     ap.add_argument("--oof", type=Path, required=True, help="i, j, y, oof")
@@ -69,7 +61,7 @@ def logit(p):
 
 
 def f05(o, meta, t, exclusive):
-    """Macro F0.5 over all sampled S1 (cv_all.py). o: i, j, y, oof."""
+    """Macro F0.5 over all sampled S1. o: i, j, y, oof."""
     q = o.filter(pl.col("oof") == pl.col("oof").max().over("j")) if exclusive else o
     q = q.filter(pl.col("oof") >= t)
     per = (meta.join(q.group_by("i").agg(npred=pl.len(), tp=pl.col("y").sum()), on="i", how="left")
@@ -80,7 +72,7 @@ def f05(o, meta, t, exclusive):
                       .otherwise(1.25 * P * R / (0.25 * P + R)).mean()).item()
 
 
-# ── stack (was ce2_band.py) ─────────────────────────────────────────────────────
+# ── stack ──────────────────────────────────────────────────────────────────
 def main_stack():
     ap = argparse.ArgumentParser()
     ap.add_argument("--work", type=Path, default=Path("work"))
@@ -91,28 +83,28 @@ def main_stack():
     ap.add_argument("--test-prob", type=Path, help="base test probs (i, j, prob); default <work>/test_prob_v81.parquet")
     ap.add_argument("--meta", type=Path, help="all sampled S1 (i, ntrue); default <work>/tune_meta.parquet")
     ap.add_argument("--report", type=Path, help="base report json to compare the reproduced CV with (optional)")
-    ap.add_argument("--ce3", type=Path, help="dir with ONE extra model's train_ce/test_ce.parquet (half-0 model: "
-                                                 "scores train half 1 only) -> arms A2 [lo, ce2] vs A3 [lo, ce2, ce3] "
-                                                 "on half-1 S1 only")
-    ap.add_argument("--margin", type=float, help="min CV gain of the new arm to write a submission "
-                                                  "(default: > 0 for ce2, 0.0003 with --ce3)")
+    ap.add_argument("--ce3", type=Path, help="optional extra cross-encoder scores covering half 1 of the Source 1 "
+                                                 "records: compares the model with and without them on that half "
+                                                 "(not used by reproduce.py)")
+    ap.add_argument("--margin", type=float, help="min CV gain over the control model needed to write output "
+                                                  "(default: any gain; 0.0003 with --ce3)")
     ap.add_argument("--save-test-prob", type=Path, help="final test probs (i, j, prob); default "
                                                          "<work>/test_prob_<out name minus 'output_'>.parquet")
-    ap.add_argument("--frce", type=Path, nargs="+", help="dir(s) with test_ce.parquet of France-adapted CEs (P5, LB +0.001688): "
-                                                  "every French test pair with base prob >= 0.02 is re-scored by the "
-                                                  "fitted stage 2 with this score in ce2's slot; several dirs (P5 from ce2 h0, "
-                                                  "P5b from h1) -> stage-2 outputs averaged")
-    ap.add_argument("--save-oof", type=Path, help="write the written arm's stage-2 OOF (i, j, y, oof) for threshold searches")
-    ap.add_argument("--frce-min-cov", type=float, default=0.98, help="min share of French pairs (p >= 0.02) with a P5 score")
+    ap.add_argument("--frce", type=Path, nargs="+", help="folder(s) with test_ce.parquet of the French cross-encoders: every "
+                                                  "French test pair with base prob >= 0.02 is re-scored by the stage-2 "
+                                                  "model with this score in place of the re-ranker score; several "
+                                                  "folders -> stage-2 outputs averaged")
+    ap.add_argument("--save-oof", type=Path, help="write the stage-2 out-of-fold predictions (i, j, y, oof)")
+    ap.add_argument("--frce-min-cov", type=float, default=0.98, help="min share of French pairs (p >= 0.02) with a French cross-encoder score")
     ap.add_argument("--write-arm", choices=("new", "control"), default="new",
-                    help="which arm to fit and write (control = e.g. A2 in --ce3 mode, for an LB A/B of ce3)")
+                    help="which model to fit and write: new = with the extra scores, control = without")
     ap.add_argument("--half", type=int, choices=(0, 1), help="fit and score the stage on the S1 records of this half only "
-                    "(the final's French rows: half 1, as leaderboard upload A)")
+                    "(the final's French rows use half 1)")
     ap.add_argument("--threads", type=int, default=8)
     a = ap.parse_args()
     a.oof, a.test_prob = a.oof or a.work / "oof_v81.parquet", a.test_prob or a.work / "test_prob_v81.parquet"
     a.meta = a.meta or a.work / "tune_meta.parquet"
-    a.margin = a.margin if a.margin is not None else (0.0003 if a.ce3 else 1e-9)  # ce2: any gain > 0
+    a.margin = a.margin if a.margin is not None else (0.0003 if a.ce3 else 1e-9)  # any gain > 0
     a.save_test_prob = a.save_test_prob or a.work / f"test_prob_{a.out.name.removeprefix('output_')}.parquet"
     ce = lambda f, name="ce2": pl.read_parquet(f).rename({"ce": name})  # noqa: E731
     half = ((pl.col("i").cast(pl.UInt64) * 2654435761) % 2**32) % 2  # ce_data.ce_half
@@ -127,7 +119,7 @@ def main_stack():
     o = pl.read_parquet(a.oof, columns=["i", "j", "y", "oof"])
     meta = pl.read_parquet(a.meta, columns=["i", "ntrue"])
     arms = [("B control [logit(oof)]", ["lo"]), ("A [logit(oof), ce2]", ["lo", "ce2"])]
-    if a.ce3:  # one half-0 model: only half-1 train pairs have ce3 -> stage 2 trained and scored on half-1 S1 only
+    if a.ce3:  # the extra scores cover half 1 only: fit and score on that half
         c3 = ce(a.ce3 / "train_ce.parquet", "ce3")
         halves = c3.select(half.alias("h"))["h"].unique().to_list()
         assert halves == [1], f"ce3 train scores cover halves {halves}, expected only [1] (half-0 model): leakage"
@@ -135,7 +127,7 @@ def main_stack():
         tr_ce = tr_ce.join(c3, on=["i", "j"], how="inner")
         te_ce = te_ce.join(ce(a.ce3 / "test_ce.parquet", "ce3"), on=["i", "j"], how="inner")
         arms = [("A2 [logit(oof), ce2]", ["lo", "ce2"]), ("A3 [logit(oof), ce2, ce3]", ["lo", "ce2", "ce3"])]
-    if a.half is not None:  # same rows as the uploaded build, whose e5-large helper scores covered exactly half 1
+    if a.half is not None:  # fit and score on one half of the Source 1 records
         o, meta = o.filter(half == a.half), meta.filter(half == a.half)
     o = o.with_row_index("r")
     band = o.join(tr_ce, on=["i", "j"], how="inner").sort("r")
@@ -170,9 +162,9 @@ def main_stack():
     gain = N[0] - C[0]
     print(f"{nname.split()[0]} - {cname.split()[0]} = {gain:+.5f}; vs base = {N[0] - v81[0]:+.5f} (margin {a.margin})", flush=True)
     if gain < a.margin:
-        print("new arm does not clear the margin: no submission written", flush=True)
+        print("the cross-encoder model does not beat the control by the margin: nothing written", flush=True)
         return
-    if a.write_arm == "control":  # write the control arm (LB A/B), whatever the CV says
+    if a.write_arm == "control":  # write the control model, whatever the CV says
         nname, ncols, N = cname, ccols, C
     if a.save_oof:
         o.join(band.select("r", p2=pl.Series(p2s[nname], dtype=pl.Float32)), on="r", how="left") \
@@ -181,13 +173,13 @@ def main_stack():
     m = lgb.LGBMClassifier(**SECOND, n_jobs=a.threads).fit(band.select(ncols).to_numpy().astype(np.float32), y)
     tp = pl.read_parquet(a.test_prob, columns=["i", "j", "prob"])
     tb = tp.join(te_ce, on=["i", "j"], how="inner")
-    n_band = tp.filter(pl.col("prob").is_between(0.02, 0.98)).height  # band_export.py's band (review F5)
+    n_band = tp.filter(pl.col("prob").is_between(0.02, 0.98)).height  # the exported band
     assert tb.height == n_band, f"test band {n_band} pairs but {tb.height} scored: truncated or mismatched CE output"
     tb = tb.with_columns(lo=pl.Series(logit(tb["prob"].to_numpy())))
     p2 = m.predict_proba(tb.select(ncols).to_numpy().astype(np.float32))[:, 1]
     tp = tp.join(tb.select("i", "j", p2=pl.Series(p2, dtype=pl.Float32)), on=["i", "j"], how="left", maintain_order="left") \
            .with_columns(prob=pl.coalesce("p2", "prob")).select("i", "j", "prob")
-    if a.frce:  # P5: France-adapted CE(s) replace ce2 for French pairs (band and confident), as in the LB probe
+    if a.frce:  # French pairs: the French cross-encoders' scores replace the re-ranker score
         fr = pl.scan_parquet(str(a.work / "test_s1" / "*.parquet")).filter(pl.col("country") == "France").select(i="idx").collect()
         base = pl.read_parquet(a.test_prob, columns=["i", "j", "prob"]).join(fr, on="i").filter(pl.col("prob") >= 0.02)
         pfs = []
@@ -195,15 +187,15 @@ def main_stack():
             x = base.join(ce(d / "test_ce.parquet"), on=["i", "j"], how="inner")
             assert x.height >= a.frce_min_cov * base.height, f"{d}: France-adapted scores cover {x.height} of {base.height} French pairs (p >= 0.02)"
             if x.height < base.height:
-                print(f"P5 {d}: {base.height - x.height} French pairs without an adapted score", flush=True)
-            if "ce3" in ncols:  # ce3 exists for band pairs only; confident French pairs get NaN (LightGBM's missing branch)
+                print(f"{d}: {base.height - x.height} French pairs without a French cross-encoder score", flush=True)
+            if "ce3" in ncols:  # extra scores exist for band pairs only; other French pairs get NaN (LightGBM's missing branch)
                 x = x.join(te_ce.select("i", "j", "ce3"), on=["i", "j"], how="left")
             x = x.with_columns(lo=pl.Series(logit(x["prob"].to_numpy())))
             pfs.append(x.select("i", "j", pf=pl.Series(m.predict_proba(x.select(ncols).to_numpy().astype(np.float32))[:, 1], dtype=pl.Float32)))
         pf = pl.concat(pfs).group_by("i", "j").agg(pl.col("pf").mean())  # average of the models that scored the pair
         tp = tp.join(pf, on=["i", "j"], how="left", maintain_order="left") \
                .with_columns(prob=pl.coalesce("pf", "prob")).select("i", "j", "prob")
-        print(f"P5: {pf.height} French pairs re-scored with {len(a.frce)} France-adapted CE(s)", flush=True)
+        print(f"{pf.height} French pairs re-scored with {len(a.frce)} French cross-encoder(s)", flush=True)
     tp.write_parquet(a.save_test_prob)
     s1p, cp = str(a.work / "test_s1" / "*.parquet"), str(a.work / "test_cand" / "*.parquet")
     q = decide(tp.select("i", "j"), tp["prob"].to_numpy(), N[1], N[2])

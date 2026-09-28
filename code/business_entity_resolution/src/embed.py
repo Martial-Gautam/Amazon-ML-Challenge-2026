@@ -1,4 +1,4 @@
-"""Embedding similarity features for candidate pairs (GPU; run on Kaggle or any CUDA machine).
+"""Embedding similarity features for candidate pairs (GPU).
 
 Model: intfloat/multilingual-e5-small (MIT licence, 118M params). Raw names/addresses are embedded as-is,
 so native Indic scripts are read by the model directly: a signal independent of our transliteration.

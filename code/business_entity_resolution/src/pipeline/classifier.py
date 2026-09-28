@@ -1,11 +1,12 @@
-"""v8.x: retrain v8's matcher with EXTRA feature columns, without recomputing v8's features.
-Reads work/train_features.parquet (run.py train --save-features) and work/test_features/ (run.py predict
---save-test-features), left-joins each --extra file ({split} placeholder, columns i, j + features) on (i, j),
-then the same 5-fold GroupKFold CV / threshold grid / one-owner rule / final fit as run.py train, and writes a
-submission. Extra columns must be computed per split (fitted on train+test text where stats are involved).
+"""LightGBM matcher with extra feature columns.
 
-python pipeline/classifier.py --params code/business_entity_resolution/best_params.json \
-    --extra 'work/tfw_{split}.parquet' --out output_v81 --tag v81 [--seeds 3]
+Reads the saved feature tables (run.py train / predict --features-only), left-joins each --extra file ({split}
+placeholder, columns i, j + features) on (i, j), runs 5-fold GroupKFold cross-validation by Source 1 record, picks the
+threshold and one-to-one rule that maximise macro F0.5 on out-of-fold predictions, fits the final model (average of
+--seeds seeds) and scores the test pairs.
+
+python pipeline/classifier.py --work work10 --params best_params.json --extra 'work10/gpu/{split}_emb.parquet' \
+    --extra 'work10/rarity_{split}.parquet' --seeds 3 --out output_v10 --tag v10
 """
 import argparse
 import glob
@@ -18,7 +19,7 @@ import numpy as np
 import polars as pl
 from sklearn.model_selection import GroupKFold
 
-_R = Path(__file__).resolve().parents[1]  # repo root, or src/ when shipped as src/experiments/ in the zip
+_R = Path(__file__).resolve().parents[1]  # src/
 sys.path.insert(0, str(_R / "code/business_entity_resolution/src" if (_R / "code").exists() else _R))
 import run  # noqa: E402
 from run import PARAMS, decide, f05, truth_pairs, write  # noqa: E402
@@ -81,7 +82,7 @@ def main():
                for ex in (True, False) for t in np.arange(0.2, 0.96, 0.02))
     print(f"  CV macro F0.5 = {best[0]:.4f} @ t={best[1]} exclusive={best[2]} (S1 with >= 1 candidate)", flush=True)
     meta = a.work / "tune_meta.parquet"  # every S1 of run.py's training sample, also those without any candidate
-    if meta.exists():  # same S1 set as run.py train's CV, so v8 (run.py) and v8.x/v9 numbers compare; the threshold
+    if meta.exists():  # same S1 set as run.py train's CV, so the numbers compare across versions; the threshold
         m = pl.read_parquet(meta)  # is unchanged (S1 without candidates score the same at every threshold)
         n0, t0 = m.height - len(ids), int((m.filter(~pl.col("i").is_in(ids.implode()))["ntrue"] == 0).sum())
         cv_all = (best[0] * len(ids) + t0) / m.height

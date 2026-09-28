@@ -4,7 +4,7 @@
     pip install -r code/business_entity_resolution/requirements-gpu.txt      # torch + transformers (CUDA)
     python code/business_entity_resolution/reproduce.py --data /path/to/student_resource
 
---data is the organisers' folder holding dataset/ and utils/. Every stage except `final` needs a CUDA GPU.
+--data is the student_resource folder holding dataset/ and utils/. Every stage except `final` needs a CUDA GPU.
 A step whose output already exists is skipped, so an interrupted run resumes. `--stage final` (repeatable) runs
 only the named stages. Linux, macOS or WSL.
 """
@@ -177,7 +177,7 @@ def link_data(data):
     for name in ("dataset", "utils"):
         target = (Path(data) / name).resolve()
         if not target.is_dir():
-            sys.exit(f"error: {data} has no {name}/ folder (expected the organisers' student_resource folder)")
+            sys.exit(f"error: {data} has no {name}/ folder (expected the student_resource folder)")
         link = ROOT / name
         if link.is_symlink() or not link.exists():
             if link.is_symlink():
@@ -211,7 +211,7 @@ def check(names):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--data", help="the organisers' student_resource folder (with dataset/ and utils/); "
+    ap.add_argument("--data", help="the student_resource folder (with dataset/ and utils/); "
                                    "optional if both already sit next to code/")
     ap.add_argument("--stage", action="append", choices=("base", "neighbours", "v9", "rerank", "france", "v10", "final"),
                     help="run only this stage (repeatable); default: all, in order")
@@ -222,7 +222,7 @@ def main():
     if a.data:
         link_data(a.data)
     if not Path("dataset/test/test_source1.tsv").exists() or not Path("utils/validate_submission.py").exists():
-        sys.exit("error: dataset/ or utils/ not found. Pass the organisers' folder: --data /path/to/student_resource")
+        sys.exit("error: dataset/ or utils/ not found. Pass: --data /path/to/student_resource")
     all_stages = stages(a)
     names = a.stage or list(all_stages)
     check(names)
