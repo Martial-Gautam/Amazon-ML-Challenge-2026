@@ -7,95 +7,175 @@
 ---
 
 ## 1. Executive Summary
-A **blocking → learned matching → second stage** pipeline. Records are normalised by a stdlib-only Indic-script
-transliterator and a native-word dictionary mined from the training pairs. Five label-free candidate sources keep
-**~25 candidates per Source 1 record at ~99.2% training recall**. A tuned LightGBM matcher (3 seeds) combines string,
-rarity and context features with neural signals from MIT-licensed `multilingual-e5` models; a second stage re-scores
-the uncertain pairs with an e5-base cross-encoder, adapted to France (test-only) with synthetic pairs.
-Final: US/India rows from v10 (CV 0.98921 with the conflict rule), French rows from v9 with the France-adapted cross-encoders P5 + P5b (France threshold 0.91), plus French copies that rule P1 had removed although both models were confident ("Services", "Associés", "France", initials) re-accepted; public leaderboard **0.986691**. No external data, APIs or lookups.
+
+We find each business's copies in three steps: gather a small set of likely candidates, score every candidate pair
+with a LightGBM model, and have a multilingual transformer cross-encoder take a second look at the pairs the model is
+unsure about. France never appears in training, so we taught the cross-encoder French by fine-tuning it on pairs built
+from the unlabelled French test records. The final submission scores **0.986691** on the public leaderboard (macro
+F0.5), with a cross-validated **0.98921** on US and India, using no external data.
+
+---
 
 ## 2. Methodology
+
 ### 2.1 Problem Analysis
-2.2M Source 1 / 10.3M Source 2+3 training records; ~3.7 true matches per matched S1; 5.6% singletons; 26% of
-S2/S3 records are decoys. Matches never cross the country label, so blocking is per country (open set: France, test-only,
-runs through the same code). Noise: typos, leet digits (`Freed0m`), extra/duplicated words, website names
-(`rajsoftware.com`), **native-script translations from a fixed vocabulary** (2,000 words = 98.6%: `குளோபல்` = *global*),
-empty addresses, generic names shared by many businesses.
+
+The training data has 2.2 million Source 1 businesses and 10.3 million Source 2/3 records from the US and India. The
+test set adds France (15 % of the 1.7 million test businesses), with no French examples to learn from.
+
+What we learned from the data:
+
+- **The data follows the same recipe in every country.** US and India both have 3.46 true copies per business, 5.6 %
+  of businesses with no copy at all, and 74 % of Source 2/3 records matched. So what the model learns on US and India
+  should carry over to France.
+- **Copies never cross countries,** so candidates are searched within one country at a time.
+- **Names are noisy in predictable ways:** typos, digits for letters (`Freed0m`), website-style names
+  (`rajsoftware.com`), legal forms (Pvt Ltd, LLC, SARL), and Indian names written in native scripts. The native-script
+  words come from a small vocabulary (2,000 words cover 98.6 %), so a dictionary learned from training pairs translates
+  them.
+- **Some copies change one word on purpose.** A copy often swaps its last word for *center*, *services* or *partners*;
+  decoy records add a word such as *groupe* or *holding* and sit at a nearby house number.
+- **France is harder:** it has 10–40 times more businesses with near-identical names at the same address, so a wrong
+  match is easier to make there.
+- **Addresses are often partial or empty,** and many small businesses share generic names.
 
 ### 2.2 Solution Strategy
-**Approach:** blocking with several complementary candidate sources → gradient-boosted matcher with neural
-pair features and a one-owner rule → cross-encoder second stage, with France handled by label-free rules and synthetic
-pairs. **Normalisation** (`prep.py`): transliteration from Unicode character names; the mined native-word dictionary;
-legal-form, abbreviation, French street-type, elision and leet-digit rules; consonant *skeletons*; house-number keys.
+
+**Approach Type:** Blocking + classifier + cross-encoder re-ranking (hybrid).  
+**Core Innovation:** A transformer cross-encoder re-reads the uncertain pairs. For France, a country the model never
+saw, the same cross-encoder is adapted by self-training on the unlabelled French test records, with synthetic
+look-alikes that mimic how the data was generated.
+
+The models doing the heavy lifting:
+
+| Model | Size | What it does |
+|---|---|---|
+| `intfloat/multilingual-e5-base` cross-encoder | 278 M parameters | reads both records of an uncertain pair together and judges whether they are the same business; two French-adapted copies handle France |
+| `intfloat/multilingual-e5-small` dense retriever | 118 M parameters | fine-tuned to find a business's copies by meaning, for candidates that share no keyword |
+| `intfloat/multilingual-e5-small` cross-encoder and embeddings | 118 M parameters | quick neural similarity signals for every candidate pair |
+| LightGBM | gradient-boosted trees | the main matcher over all features, and the model that combines its score with the cross-encoder's |
+
+All models are MIT-licensed and far below the 8 billion parameter limit.
+
+Before anything else, every record is normalised: native scripts are transliterated to Latin letters, abbreviations
+expanded, legal forms removed, and house numbers extracted.
+
+---
 
 ## 3. Candidate Generation (Blocking)
-| Source | What it adds |
-|---|---|
-| Composite keys (country-scoped: name skeletons, token pairs, prefixes, name/street + house number, address word pairs) | IDF-scored pool of 1,500 per S1, fuzzy re-rank, **top 20** |
-| Bidirectional rescue | the pair is also kept if the S1 is the candidate's best S1 (+0.5% pairs, +0.0010 CV) |
-| e5-small neighbours | top-5 same-country records by cosine of "name \| address" |
-| **Fine-tuned retriever** | e5-small bi-encoder trained (contrastive, hard negatives) only on 99,948 held-out S1; top-10 finds 65.4% of the remaining misses |
-| Rare-name rule | empty-address candidates whose exact name is unique among the country's S1 (97.6% precision) |
 
-Training recall: 92.6% (v7) → 96.6% (v8) → 97.8% (v9) → **~99.2%** (v10); test: 43.9M pairs (25.3 per S1).
-Every source was adopted only for its measured recall per added pair; the remaining misses are mostly empty-address
-records with common names, which the data cannot resolve.
+Comparing every Source 1 business with every Source 2/3 record would mean trillions of pairs, so we first pick about 25
+likely candidates per business, always within the same country.
+
+- **Blocking keys used:** words of the normalised name, consonant "skeletons" of names (robust to typos), name + street
+  + house number combinations, and address word pairs. Keys are weighted by rarity (IDF), the best 1,500 records are
+  re-ranked by fuzzy string similarity, and the top 20 are kept. Extra sources add what keys miss:
+  - the 5 nearest records by `multilingual-e5-small` embedding similarity;
+  - the 10 nearest records by our fine-tuned dense retriever;
+  - a rescue rule that keeps a pair when the Source 1 business is that record's best match, and a rule for records
+    with an empty address but a name unique in their country.
+- **Candidate pairs generated:** 43.9 million test pairs, about 25 per business.
+- **How you ensured true matches were not lost:** each source was kept only if it found enough extra true matches for
+  the pairs it added, measured on training data. Recall of true matches grew from 92.6 % to **99.2 %**. The remaining
+  misses are mostly records with an empty address and a common name, which the data itself cannot resolve.
+
+---
 
 ## 4. Matching Model
-**Features:** name / core / skeleton rapidfuzz ratios, Jaro-Winkler, char-3-gram TF-IDF cosines; address ratios,
-postcode, house-number overlap; blocking context and neighbour rank / cosine; **name rarity** (number of S1 and of
-candidates sharing the exact core name, empty-address flag and interactions: +0.0038 CV, our largest feature gain);
-e5-small name / address cosines; a **cross-encoder** logit (e5-small fine-tuned on 2.94M pairs of 99,948 training S1
-that are excluded from the matcher's training rows, so the feature is never optimistic).
-**Matcher:** LightGBM (MIT), Optuna-tuned, 2.1M training S1, mean of 3 seeds. **Decision:** accept if probability ≥ *t*
-and this S1 is the candidate's most probable owner; *t* maximises the exact metric on 5-fold GroupKFold (by S1)
-out-of-fold predictions. US/India: drop a winner whose second-best S1 is within 0.2 and ≥ 0.5 (+0.00018 CV).
-**Second stage:** for the uncertain pairs (probability 0.02–0.98) a `multilingual-e5-base` cross-encoder (ce2, two
-out-of-fold halves) feeds a small LightGBM on [logit(probability), ce2] (+0.00074 CV on v10).
-**France (P5):** ce2 fine-tuned on 885,573 synthetic French pairs built from the French test records: confident
-one-owner matches as positives, negatives from the generator's own look-alike recipes (sibling-word swaps, decoy words,
-near house numbers); its score replaces ce2 for French pairs (LB +0.0017). Two label-free France rules reject
-"one common word swapped" sibling look-alikes at the same address (LB +0.0011) and at a different address
-(checked by training on one country and applying the rule to the other).
+
+**Features used:**
+- Name features: fuzzy string ratios (RapidFuzz) on the full name, the name without legal words, and its consonant
+  skeleton; Jaro-Winkler; character 3-gram TF-IDF cosine; **name rarity**, meaning how many businesses and records share
+  the exact name (our largest single feature gain, +0.0038 CV).
+- Address features: fuzzy address ratios, postcode agreement, house-number overlap, empty-address flags.
+- Other: how the candidate was found (key score, rank, neighbour similarity); `multilingual-e5-small` similarity of
+  names and of addresses; the score of a small `multilingual-e5-small` cross-encoder trained on 99,948 businesses that
+  the matcher never trains on, so the feature is never over-optimistic.
+
+**Model type:** three models in sequence.
+1. **LightGBM matcher** (parameters tuned with Optuna, trained on 2.1 million businesses, average of 3 seeds) scores all
+   43.9 million pairs: CV 0.98802.
+2. **Cross-encoder re-ranker:** the 1.5 million pairs with a probability between 0.02 and 0.98 go to a
+   `multilingual-e5-base` cross-encoder that reads both records at once. It is trained twice, on each half of the
+   businesses, so no training pair is scored by a model that saw it. A small LightGBM combines the matcher's and the
+   cross-encoder's scores: CV 0.98876.
+3. **French cross-encoders:** we built 885,573 French training pairs from the test records alone. Positives are
+   300,000 French pairs the model is at least 99.5 % sure of; negatives are synthetic look-alikes made the way the data
+   was generated (one generic word swapped, decoy words at a nearby house number). Both cross-encoders were fine-tuned
+   on them for one epoch, and their average replaces the re-ranker for French pairs (about +0.011 on France on the
+   leaderboard).
+
+**Threshold selection method:** each Source 2/3 record goes to at most one business, its most probable one. The
+US/India threshold (0.58) maximises macro F0.5 on out-of-fold predictions; a match is also dropped when a second
+business scores almost as high (at least 0.5 and within 0.2), which brings CV to **0.98921**. France has no labels, so
+its threshold (0.91) was chosen with a small calibration model fitted to leaderboard results. For France we also reject
+a match whose name differs from the business's name by one common word (a typical look-alike), unless that word is a
+known noise word such as *Services* or *Associés* and both French models are confident.
+
+France uses the model version without the dense retriever: the retriever's extra French candidates were mostly
+look-alikes and cost France 0.004.
+
+---
 
 ## 5. Results & Error Analysis
-| Version | Main change | Recall | CV F0.5 | Public LB |
-|---|---|---|---|---|
-| v3 | composite keys, fuzzy re-rank | 93% | 0.9487 | 0.936 |
-| v7 | TF-IDF, embeddings, tuned LightGBM, cross-encoder | 92.6% | 0.9603 | 0.953 |
-| v8 | larger pool + address keys, all 2.1M training S1 | 96.6% | 0.9804 | 0.974 |
-| v9 + ce2 + P5 + France rules | dictionary, rescue, neighbours, rarity features, second stage | 97.8% | 0.98706 | 0.983893 |
-| v11 | v10 (retriever, normalisation fixes, 3 seeds) + second stage + P5 + rules | ~99.2% | 0.98921 | 0.98533 |
-| 0.91 file | US/India from v11; France from v9 + P5/P5b ensemble at threshold 0.91 (v10's extra French candidates hurt France) | ~99.2% | 0.98921 | 0.986371 |
-| + noise copies | + French noise copies ("Services", "Associés") that rule P1 had removed | ~99.2% | 0.98921 | 0.986525 |
-| + P1 reversal | + P1-removed same-house copies the models score >= 0.91 ("France", initials) | ~99.2% | 0.98921 | 0.986673 |
-| **final** | + all remaining P1/P2'-removed winners the models score >= 0.91 | ~99.2% | **0.98921** | **0.986691** |
 
-Final assembly: 5,817,951 matches (US/India threshold 0.58 + conflict rule; France threshold 0.91 + rules P1/P2', then French noise-variant recovery). A diagnostic upload with the French rows emptied measured US/India at 0.9897 on the LB (above CV) and France at 0.9673: France recall is the remaining gap.
-Also tried and not kept (measured on CV or LB): learned re-ranker, context stacking, anchor features, CatBoost blends,
-more trees, re-tuning, importance weighting, word TF-IDF (France −0.0017 on the LB), an e5-large second-stage model,
-a learned unseen-country corrector, pseudo-labelling of the matcher.
+- **F_0.5 Score (macro):** **0.98921** cross-validated on US and India; **0.986691** on the public leaderboard.
+
+| Version | Main change | Recall | CV F0.5 | Public LB |
+|---|---|:---:|:---:|:---:|
+| v3 | composite keys, fuzzy re-rank | 93.0 % | 0.9487 | 0.936 |
+| v7 | TF-IDF, embeddings, tuned LightGBM, small cross-encoder | 92.6 % | 0.9603 | 0.953 |
+| v8 | larger candidate pool, address keys, all training businesses | 96.6 % | 0.9804 | 0.9739 |
+| v9 | dictionary, neighbours, rarity features, e5-base re-ranker, French cross-encoder and rules | 97.8 % | 0.98693 | 0.9839 |
+| v10 | dense retriever, 3 seeds, tuned US/India threshold | 99.2 % | 0.98921 | 0.9853 |
+| final | France from v9 with two French cross-encoders, threshold 0.91, noise-word recovery | 99.2 % | 0.98921 | **0.986691** |
+
+A diagnostic upload with the French rows left empty measured the two parts separately: **US/India 0.9897** on the
+leaderboard (slightly above CV) and **France 0.9673**.
+
+- **Common false positives (wrong merges):** look-alike businesses at the same address whose names differ by one
+  generic word (for example *Club* vs *Comité*), especially in France; and records with an empty address and a generic
+  name that several businesses share.
+- **Common false negatives (missed matches):** in France, copies whose noise the model never saw in training (French
+  noise words, accents, reordered words), roughly 10 % of French copies; elsewhere, empty-address copies of businesses
+  with common names, where two candidates are equally likely.
+
+Tried and not kept, each measured: CatBoost blends, a LambdaRank re-ranker, an e5-large cross-encoder (−0.0004 on the
+leaderboard), word TF-IDF features (−0.0017 on France), a second round of French self-training (−0.0002), and a learned
+corrector for unseen countries.
+
+---
 
 ## 6. Conclusion
-Candidate recall set the ceiling, so each candidate source was bought with measured recall per added pair; rarity
-features taught the matcher when "same name" is evidence; cross-encoders trained on held-out records gave the largest
-neural gains; and France, absent from training, was handled with label-free rules and synthetic pairs checked on the
-leaderboard.
+
+Recall set the ceiling, so we added candidate sources one at a time and kept only those that paid for themselves. Name
+rarity taught the matcher when "same name" really means "same business", and the multilingual-e5 cross-encoders gave
+the biggest neural gains. France was the hardest part: with no labels, self-training the cross-encoder on French test
+records brought the largest improvement, and better French recall is where the remaining gap lies.
 
 ---
 
 ## Appendix
+
 ### A. Code Artefacts
-`code/business_entity_resolution/` with the full run order in its `README.md`: `src/` (`prep.py`, `native_dict.py`,
-`blocking.py`, `features.py`, `embed.py`, `ce_data.py`, `ce.py`, `tune.py`, `run.py`) and `src/experiments/` (neighbour
-search, retriever, rarity columns, retraining, second stage, P5 data, France rules, one-command final assembly).
-Models: LightGBM, `multilingual-e5-small` (118M) and `-base` (278M), all MIT. GPU steps need `requirements-gpu.txt`
-(transformers pinned to 4.57.6: 5.x changes cross-encoder logits on borderline pairs).
+
+`code/business_entity_resolution/` holds the runnable pipeline. One command rebuilds both output files:
+
+```bash
+pip install -r code/business_entity_resolution/requirements.txt -r code/business_entity_resolution/requirements-gpu.txt
+python code/business_entity_resolution/reproduce.py --data /path/to/student_resource
+```
+
+`src/` has normalisation, blocking, features, the cross-encoders and the core driver; `src/pipeline/` has one module
+per later step (candidates, extra features, classifier, re-ranking, France, decisions). The `README.md` there lists the
+requirements and steps. GPU steps need a CUDA GPU; `transformers` is pinned to 4.57.6 because later versions change the
+cross-encoder scores.
 
 ### B. Additional Results: data use and fair play
-Only the provided data is used. Everything learned from **labels** (matcher, cross-encoders, dictionary, thresholds) is
-fitted on training data only. Label-free statistics use each split's own text: char TF-IDF is fitted on train + test
-text; rarity counts and neighbour searches run within each split. The France-only decisions were chosen with public-LB
-probes and training-data simulations. **P5** fine-tunes the cross-encoder on pairs built from the French test records
-(text only; confident matches as positives and synthetic negatives), a self-training use the organisers confirmed as
-allowed. No test labels exist or were used.
+
+Only the provided data is used. Everything learned from labels (matcher, cross-encoders, dictionary, thresholds) is
+fitted on training data only. Label-free statistics use each split's own text: the character TF-IDF is fitted on
+training and test names, and rarity counts and neighbour searches run within each split. The French cross-encoders are
+fine-tuned on pairs built from the French test records, using their text only, never labels; the organisers confirmed
+this self-training is allowed. The French decisions were checked with public-leaderboard uploads and with simulations on
+training data.
